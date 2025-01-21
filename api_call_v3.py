@@ -24,34 +24,12 @@ def extract_images(book):
         images[item.get_name()] = item.get_content()
     return images
 
-# create PDF from text and images
-def create_pdf(text_data, images, output_pdf):
-    pdf = PDFGenerator()
-    pdf.add_page()
-    pdf.set_font('Arial', '', 12)
-
-    for line in text_data.split('\n'):
-        pdf.multi_cell(0, 10, line)
-    pdf.add_page()
-
-    img_count = 1
-    for name, content in images.items():
-        img_path = f"temp_{img_count}.png"
-        with open(img_path, 'wb') as f:
-            f.write(content)
-        pdf.image(img_path, w=100)
-        pdf.ln(10)
-        os.remove(img_path)
-        img_count += 1
-
-    pdf.output(output_pdf)
-    logging.info(f"PDF created at {output_pdf}")
-
 # main function
 def main():
     input_epub = './epub-jp/vol-5-jp-src.epub' # input EPUB file
     output_pdf = './out-pdf/vol5-vi-v1.pdf' # output PDF file
-    api_url = 'https://4546-35-231-236-189.ngrok-free.app/translate' # translation API URL
+    api_url = 'https://beb7-35-230-81-209.ngrok-free.app/translate' # translation API URL
+    temp_txt = 'temp_translation.txt' # temporary text file
 
     # progress tracking
     logging.info("Reading EPUB...")
@@ -66,24 +44,54 @@ def main():
         paragraphs = [p.get_text(strip=True) for p in soup.find_all('p')]
         collected_text.extend(titles + paragraphs)
 
-    translated_segments = [] # translated text segments
+    pdf = PDFGenerator()
+    pdf.add_page()
+    pdf.set_font('Arial', '', 12)
+
+    # initialize temp file
+    with open(temp_txt, 'w', encoding='utf-8') as f:
+        f.write("")
+
     logging.info("Sending extracted text to API...")
-    # translate text segments
+    # translate text segments and write to PDF, also write to temp file
     for segment in tqdm(collected_text, desc="Translating"):
         if not segment.strip():
-            translated_segments.append(segment)
+            pdf.multi_cell(0, 10, segment)
             continue
-        try: #catch exceptions
+        try:
             resp = requests.post(api_url, json={"text": segment})
             resp.raise_for_status()
             translated_text = resp.json().get('translated_text', segment)
-            translated_segments.append(translated_text)
+            pdf.multi_cell(0, 10, translated_text)
+            with open(temp_txt, 'a', encoding='utf-8') as f:
+                f.write(translated_text + "\n")
         except Exception as e:
             logging.error(f"Translation error: {e}")
-            translated_segments.append(segment)
+            pdf.multi_cell(0, 10, segment)
+            with open(temp_txt, 'a', encoding='utf-8') as f:
+                f.write(segment + "\n")
 
-    final_text = '\n'.join(translated_segments)
-    create_pdf(final_text, images, output_pdf)
+    pdf.add_page()
+    img_count = 1
+    for name, content in images.items():
+        img_path = f"temp_{img_count}.png"
+        try:
+            with open(img_path, 'wb') as f:
+                f.write(content)
+            if os.path.exists(img_path):
+                pdf.image(img_path, x=10, y=None, w=100)
+                pdf.ln(10)
+                with open(temp_txt, 'a', encoding='utf-8') as f:
+                    f.write(f"Image: {name}\n")
+        except Exception as e:
+            logging.error(f"Error processing image {img_count}: {e}")
+        finally:
+            if os.path.exists(img_path):
+                os.remove(img_path)
+        img_count += 1
+
+    pdf.output(output_pdf)
+    logging.info(f"PDF created at {output_pdf}")
 
 if __name__ == '__main__':
     main()

@@ -1,8 +1,20 @@
-# Translate Your Favorite Light Novel to Your Favorite Languae ( currenly Vietnamese )
+# Translate Your Favorite Light Novel to Your Favorite Language  
+(Currently supports Vietnamese)
 
-A machine learning project for translating EPUB files to PDF.
+This project leverages machine learning to translate EPUB files into high-quality PDF documents. Whether you're a light novel enthusiast or simply want to explore stories in your preferred language, this tool provides an efficient and user-friendly workflow.
+
+## Features  
+- Translate EPUB files to other languages (initially Vietnamese).  
+- Outputs translations in well-formatted PDF files.  
+- Utilizes Google Colab for GPU acceleration.  
+- Simple integration with ngrok for API handling.
 
 ## How to Use
+
+0. **Activate vitural enviroment**
+python -m venv venv
+source venv/bin/activate    # macOS/Linux
+venv\Scripts\activate       # Windows
 
 1. **Create an ngrok account**  
    Sign up at [ngrok](https://ngrok.com/) and get your API key.
@@ -29,6 +41,11 @@ A machine learning project for translating EPUB files to PDF.
    - Modify the input/output file paths in the script.
    - Run the script to see the translation results.
 
-## Good Luck!
 
-Enjoy translating your EPUB files into high-quality PDF documents.
+Contribute
+
+We welcome feedback, ideas, and contributions! Feel free to submit issues or pull requests to improve this project.
+
+Good Luck!
+
+Enjoy translating your favorite light novels and exploring new stories in your preferred language.

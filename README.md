@@ -12,9 +12,9 @@ This project leverages machine learning to translate EPUB files into high-qualit
 ## How to Use
 
 0. **Activate vitural enviroment**
-   run these scrripts
-         source venv/bin/activate    # macOS/Linux
-         venv\Scripts\activate       # Windows
+   - run these scrripts
+      - source venv/bin/activate    # macOS/Linux
+      - venv\Scripts\activate       # Windows
 
 2. **Create an ngrok account**  
    Sign up at [ngrok](https://ngrok.com/) and get your API key.

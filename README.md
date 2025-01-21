@@ -1,4 +1,4 @@
-# epub-translate-ml
+# Translate Your Favorite Light Novel to Your Favorite Languae ( currenly Vietnamese )
 
 A machine learning project for translating EPUB files to PDF.
 

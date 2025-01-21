@@ -1,0 +1,162 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<package
+ xmlns="http://www.idpf.org/2007/opf"
+ version="3.0"
+ xml:lang="ja"
+ unique-identifier="jdcn"
+ prefix="ebpaj: http://www.ebpaj.jp/"
+>
+<metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+
+<!-- 作品名 -->
+<dc:title id="title">迷子になっていた幼女を助けたら、お隣に住む美少女留学生が家に遊びに来るようになった件について 5</dc:title>
+<meta refines="#title" property="file-as">マイゴニナッテイタヨウジョヲタスケタラオトナリニスムビショウジョリュウガクセイガイエニアソビニクルヨウニナッタケンニツイテゴ</meta>
+
+<!-- 著者名 -->
+<dc:creator id="creator01">ネコクロ</dc:creator>
+<meta refines="#creator01" property="role" scheme="marc:relators">aut</meta>
+<meta refines="#creator01" property="file-as">ネコクロ</meta>
+<meta refines="#creator01" property="display-seq">1</meta>
+
+<dc:creator id="creator02">緑川葉</dc:creator>
+<meta refines="#creator02" property="role" scheme="marc:relators">aut</meta>
+<meta refines="#creator02" property="file-as">ミドリカワヨウ</meta>
+<meta refines="#creator02" property="display-seq">2</meta>
+
+<!-- 出版社名 -->
+<dc:publisher id="publisher">株式会社 集英社</dc:publisher>
+<meta refines="#publisher" property="file-as">カブシキガイシャシュウエイシャ</meta>
+
+<!-- 言語 -->
+<dc:language>ja</dc:language>
+
+<!-- ファイルid -->
+<dc:identifier id="jdcn">08631525015603000000</dc:identifier>
+
+<!-- 更新日 -->
+<meta property="dcterms:modified">2023-10-31T00:00:00Z</meta>
+
+<!-- etc. -->
+<meta property="ebpaj:guide-version">1.1.3</meta>
+
+<meta name="Ripped By" content="AthK#0422" /></metadata>
+
+<manifest>
+
+<!-- navigation -->
+<item media-type="application/xhtml+xml" id="toc" href="navigation-documents.xhtml" properties="nav"/>
+<item media-type="application/x-dtbncx+xml" id="ncx" href="toc.ncx"/>
+
+<!-- style -->
+<item media-type="text/css" id="css1" href="style/book-style.css"/>
+<item media-type="text/css" id="css2" href="style/style-reset.css"/>
+<item media-type="text/css" id="css3" href="style/style-standard.css"/>
+<item media-type="text/css" id="css4" href="style/style-advance.css"/>
+<item media-type="text/css" id="css5" href="style/style-check.css"/>
+
+<!-- image -->
+<item media-type="image/jpeg" id="cover" href="image/cover.jpg" properties="cover-image"/>
+<item media-type="image/jpeg" id="image2" href="image/image1.jpg"/>
+<item media-type="image/jpeg" id="image3" href="image/image2.jpg"/>
+<item media-type="image/jpeg" id="image4" href="image/image3.jpg"/>
+<item media-type="image/jpeg" id="image5" href="image/image4.jpg"/>
+<item media-type="image/jpeg" id="image6" href="image/image5.jpg"/>
+<item media-type="image/jpeg" id="image7" href="image/image6.jpg"/>
+<item media-type="image/jpeg" id="image8" href="image/image7.jpg"/>
+<item media-type="image/jpeg" id="image9" href="image/image8.jpg"/>
+<item media-type="image/jpeg" id="image10" href="image/image9.jpg"/>
+<item media-type="image/jpeg" id="image11" href="image/image10.jpg"/>
+<item media-type="image/jpeg" id="image12" href="image/image11.jpg"/>
+<item media-type="image/jpeg" id="image13" href="image/image12.jpg"/>
+<item media-type="image/png" id="image14" href="image/gaiji0.png"/>
+<item media-type="image/jpeg" id="image15" href="image/image13.jpg"/>
+<item media-type="image/jpeg" id="image16" href="image/image14.jpg"/>
+<item media-type="image/jpeg" id="image17" href="image/image15.jpg"/>
+<item media-type="image/png" id="dx_logo" href="image/dx_logo.png"/>
+
+<!-- xhtml -->
+<item media-type="application/xhtml+xml" id="p-cover" href="xhtml/p-cover.xhtml"/>
+<item media-type="application/xhtml+xml" id="p-caution" href="xhtml/p-caution.xhtml"/>
+<item media-type="application/xhtml+xml" id="p-fmatter-001" href="xhtml/p-fmatter-001.xhtml"/>
+<item media-type="application/xhtml+xml" id="p-toc" href="xhtml/p-toc.xhtml"/>
+<item media-type="application/xhtml+xml" id="p-fmatter-002" href="xhtml/p-fmatter-002.xhtml"/>
+<item media-type="application/xhtml+xml" id="p-fmatter-003" href="xhtml/p-fmatter-003.xhtml"/>
+<item media-type="application/xhtml+xml" id="p-titlepage" href="xhtml/p-titlepage.xhtml"/>
+<item media-type="application/xhtml+xml" id="p-001" href="xhtml/p-001.xhtml"/>
+<item media-type="application/xhtml+xml" id="p-002" href="xhtml/p-002.xhtml"/>
+<item media-type="application/xhtml+xml" id="p-003" href="xhtml/p-003.xhtml"/>
+<item media-type="application/xhtml+xml" id="p-004" href="xhtml/p-004.xhtml"/>
+<item media-type="application/xhtml+xml" id="p-005" href="xhtml/p-005.xhtml"/>
+<item media-type="application/xhtml+xml" id="p-006" href="xhtml/p-006.xhtml"/>
+<item media-type="application/xhtml+xml" id="p-007" href="xhtml/p-007.xhtml"/>
+<item media-type="application/xhtml+xml" id="p-008" href="xhtml/p-008.xhtml"/>
+<item media-type="application/xhtml+xml" id="p-009" href="xhtml/p-009.xhtml"/>
+<item media-type="application/xhtml+xml" id="p-010" href="xhtml/p-010.xhtml"/>
+<item media-type="application/xhtml+xml" id="p-011" href="xhtml/p-011.xhtml"/>
+<item media-type="application/xhtml+xml" id="p-012" href="xhtml/p-012.xhtml"/>
+<item media-type="application/xhtml+xml" id="p-013" href="xhtml/p-013.xhtml"/>
+<item media-type="application/xhtml+xml" id="p-014" href="xhtml/p-014.xhtml"/>
+<item media-type="application/xhtml+xml" id="p-015" href="xhtml/p-015.xhtml"/>
+<item media-type="application/xhtml+xml" id="p-016" href="xhtml/p-016.xhtml"/>
+<item media-type="application/xhtml+xml" id="p-017" href="xhtml/p-017.xhtml"/>
+<item media-type="application/xhtml+xml" id="p-018" href="xhtml/p-018.xhtml"/>
+<item media-type="application/xhtml+xml" id="p-019" href="xhtml/p-019.xhtml"/>
+<item media-type="application/xhtml+xml" id="p-020" href="xhtml/p-020.xhtml"/>
+<item media-type="application/xhtml+xml" id="p-021" href="xhtml/p-021.xhtml"/>
+<item media-type="application/xhtml+xml" id="p-022" href="xhtml/p-022.xhtml"/>
+<item media-type="application/xhtml+xml" id="p-023" href="xhtml/p-023.xhtml"/>
+<item media-type="application/xhtml+xml" id="p-024" href="xhtml/p-024.xhtml"/>
+<item media-type="application/xhtml+xml" id="p-025" href="xhtml/p-025.xhtml"/>
+<item media-type="application/xhtml+xml" id="p-026" href="xhtml/p-026.xhtml"/>
+<item media-type="application/xhtml+xml" id="p-027" href="xhtml/p-027.xhtml"/>
+<item media-type="application/xhtml+xml" id="p-028" href="xhtml/p-028.xhtml"/>
+<item media-type="application/xhtml+xml" id="p-029" href="xhtml/p-029.xhtml"/>
+<item media-type="application/xhtml+xml" id="p-author" href="xhtml/p-author.xhtml"/>
+<item media-type="application/xhtml+xml" id="p-colophon" href="xhtml/p-colophon.xhtml"/>
+
+</manifest>
+
+<spine toc="ncx" page-progression-direction="rtl">
+
+<itemref linear="yes" idref="p-cover" properties="page-spread-left"/>
+<itemref linear="yes" idref="p-caution"/>
+<itemref linear="yes" idref="p-fmatter-001"/>
+<itemref linear="yes" idref="p-toc"/>
+<itemref linear="yes" idref="p-fmatter-002"/>
+<itemref linear="yes" idref="p-fmatter-003"/>
+<itemref linear="yes" idref="p-titlepage" properties="page-spread-left"/>
+<itemref linear="yes" idref="p-001"/>
+<itemref linear="yes" idref="p-002"/>
+<itemref linear="yes" idref="p-003"/>
+<itemref linear="yes" idref="p-004"/>
+<itemref linear="yes" idref="p-005"/>
+<itemref linear="yes" idref="p-006"/>
+<itemref linear="yes" idref="p-007"/>
+<itemref linear="yes" idref="p-008"/>
+<itemref linear="yes" idref="p-009"/>
+<itemref linear="yes" idref="p-010"/>
+<itemref linear="yes" idref="p-011"/>
+<itemref linear="yes" idref="p-012"/>
+<itemref linear="yes" idref="p-013"/>
+<itemref linear="yes" idref="p-014"/>
+<itemref linear="yes" idref="p-015"/>
+<itemref linear="yes" idref="p-016"/>
+<itemref linear="yes" idref="p-017"/>
+<itemref linear="yes" idref="p-018"/>
+<itemref linear="yes" idref="p-019"/>
+<itemref linear="yes" idref="p-020"/>
+<itemref linear="yes" idref="p-021"/>
+<itemref linear="yes" idref="p-022"/>
+<itemref linear="yes" idref="p-023"/>
+<itemref linear="yes" idref="p-024"/>
+<itemref linear="yes" idref="p-025"/>
+<itemref linear="yes" idref="p-026"/>
+<itemref linear="yes" idref="p-027"/>
+<itemref linear="yes" idref="p-028"/>
+<itemref linear="yes" idref="p-029"/>
+<itemref linear="yes" idref="p-author"/>
+<itemref linear="yes" idref="p-colophon"/>
+
+</spine>
+
+<!-- AthK#0422 --></package>

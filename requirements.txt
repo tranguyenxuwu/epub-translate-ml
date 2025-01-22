@@ -1,15 +1,4 @@
-# EPUB handling
 ebooklib>=0.18.0
-
-# HTML parsing
 beautifulsoup4>=4.12.0
-html5lib>=1.1
-
-# Progress bars
-tqdm>=4.65.0
-
-# Type hints
-typing-extensions>=4.5.0
-
-# Logging
-python-json-logger>=2.0.7
+requests>=2.31.0
+tqdm>=4.66.0

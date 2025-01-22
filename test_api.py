@@ -11,7 +11,7 @@ logging.basicConfig(
 )
 
 # Biến lưu trữ link API
-API_BASE_URL = "https://beb7-35-230-81-209.ngrok-free.app/"
+API_BASE_URL = "https://a3e9-34-126-115-169.ngrok-free.app/"
 
 class TranslationClient:
     def __init__(self, base_url: str = API_BASE_URL):

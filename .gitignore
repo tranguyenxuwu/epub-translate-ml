@@ -1,7 +1,13 @@
 cleaned
 dummytxt
 epub
-
+epub-jp
 output
+out-pdf
 .vscode
 temp_translation.txt
+macenv
+venv
+cleaner.py
+text_only.py
+test_api.py

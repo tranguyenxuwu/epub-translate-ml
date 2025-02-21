@@ -6,7 +6,7 @@ from PIL import Image
 from io import BytesIO
 
 # Đường dẫn file EPUB
-epub_path = 'vol-6.epub'
+epub_path = './book1.epub'
 # Thư mục lưu hình ảnh
 image_folder = 'extracted_images'
 os.makedirs(image_folder, exist_ok=True)

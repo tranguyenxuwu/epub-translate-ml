@@ -6,9 +6,9 @@ def txt_to_ebook(txt_file):
     book = epub.EpubBook()
 
     # Metadata for the eBook
-    book.set_title("Otonari Asobi - 5")
+    book.set_title("Vợ trong game của tôi là idol nổi tiếng ngoài đời - Tập 1 (GTL) ")
     book.set_language("vi")
-    book.add_author("Tran Nguyen UwU")
+    book.add_author("tranguyenxuwu")
 
     # Add CSS style
     style = '''
@@ -68,12 +68,12 @@ def txt_to_ebook(txt_file):
         chapters.append(current_chapter)
 
     # Organize chapters into Table of Contents and spine
-    book.toc = chapters
-    book.spine = ['nav'] + chapters
+    # book.toc = chapters
+    # book.spine = ['nav'] + chapters
 
     # Add navigation files
-    book.add_item(epub.EpubNcx())
-    book.add_item(epub.EpubNav())
+    # book.add_item(epub.EpubNcx())
+    # book.add_item(epub.EpubNav())
 
     # Generate output file name
     output_file = os.path.splitext(txt_file)[0] + '.epub'
@@ -84,5 +84,5 @@ def txt_to_ebook(txt_file):
     print(f"eBook created successfully: {output_file}")
 
 # Example usage
-txt_file = './epub/translated/vol-5_temp.txt'
+txt_file = 'input3.txt'
 txt_to_ebook(txt_file)

@@ -97,4 +97,4 @@ async def process_file(input_file: str, output_file: str):
         logging.error(f"❌ Unexpected error: {str(e)}")
 
 if __name__ == "__main__":
-    asyncio.run(process_file("input4.txt", "output2.txt"))
+    asyncio.run(process_file("./output_v2/content.txt", "./output_v2/tl.txt"))

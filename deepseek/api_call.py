@@ -28,7 +28,7 @@ Nội dung cần dịch:
 {content}"""
 
 class AdvancedTranslator:
-    def __init__(self):
+    def __init__(self, log_callback=None, progress_callback=None): # Add callbacks
         self.client = OpenAI(
             base_url="https://openrouter.ai/api/v1",
             api_key=os.getenv("API_KEY")
@@ -37,25 +37,29 @@ class AdvancedTranslator:
         self.lock = threading.Lock()
         self.context_lines = []
         self.stop_flag = False
-        signal.signal(signal.SIGINT, self._handle_interrupt)
+        # Use default print if no callback provided
+        self.log = log_callback if log_callback else lambda msg: print(msg, flush=True)
+        self.progress_update = progress_callback if progress_callback else lambda msg: sys.stdout.write(f"\r{msg}")
+        # Don't handle SIGINT here if run from GUI
 
     class TimerWithProgress:
-        def __init__(self):
+        def __init__(self, progress_callback=None): # Modified
             self.start_time = 0
             self.active = False
             self.thread = None
+            # Use default stdout write if no callback
+            self.progress_update = progress_callback if progress_callback else lambda msg: sys.stdout.write(f"\r{msg}")
 
         def start(self):
             self.active = True
             self.start_time = time.time()
-            
+
             def display_progress():
                 while self.active:
                     elapsed = time.time() - self.start_time
-                    sys.stdout.write(f"\rThời gian xử lý: {elapsed:.1f}s")
-                    sys.stdout.flush()
+                    self.progress_update(f"Thời gian xử lý: {elapsed:.1f}s") # Modified
                     time.sleep(0.1)
-            
+
             self.thread = threading.Thread(target=display_progress, daemon=True)
             self.thread.start()
 
@@ -91,8 +95,8 @@ class AdvancedTranslator:
                 lines.append(line)
             return lines
         except Exception as e:
-            print(f"LỖI PHÂN TÍCH: {str(e)}")
-            sys.exit(1)
+            self.log(f"LỖI PHÂN TÍCH: {str(e)}") # Modified
+            raise # Re-raise the exception for GUI handling
 
     def execute_translation(self, input_path):
         output_path = f"{os.path.splitext(input_path)[0]}_translated.txt"
@@ -132,11 +136,12 @@ class AdvancedTranslator:
             with open(log_path, 'r') as f:
                 processed = len(f.read().splitlines())
         
-        print(f"Đã xử lý: {processed}/{len(valid_batches)} batch")
-        print(f"Tổng batch hợp lệ: {len(valid_batches)}")
+        self.log(f"Đã xử lý: {processed}/{len(valid_batches)} batch") # Modified
+        self.log(f"Tổng batch hợp lệ: {len(valid_batches)}") # Modified
 
         for idx in range(processed, len(valid_batches)):
             if self.stop_flag:
+                self.log("Dừng xử lý theo yêu cầu.") # Added log
                 break
                 
             batch = valid_batches[idx]
@@ -150,7 +155,7 @@ class AdvancedTranslator:
                     f.write(f"\n--- BATCH {batch_num} ---\n{batch[0]}\n")
                 with open(log_path, 'a') as log:
                     log.write(f"{batch_num}\n")
-                print(f"\n→ Batch {batch_num} - Đã ghi chapter")
+                self.log(f"→ Batch {batch_num} - Đã ghi chapter") # Modified
                 
                 # Xử lý phần còn lại
                 remaining_lines = batch[1:]
@@ -161,7 +166,7 @@ class AdvancedTranslator:
                     with self.lock:
                         with open(output_path, 'a', encoding='utf-8') as f:
                             f.write(f"{result}\n")
-                    print(f"\nHoàn thành trong {elapsed:.1f}s")
+                    self.log(f"Hoàn thành batch {batch_num} (phần còn lại) trong {elapsed:.1f}s") # Modified
                 continue
 
             # Xử lý batch thông thường
@@ -175,10 +180,12 @@ class AdvancedTranslator:
                 with open(log_path, 'a') as log:
                     log.write(f"{batch_num}\n")
             
-            print(f"\nHoàn thành trong {elapsed:.1f}s")
+            self.log(f"Hoàn thành batch {batch_num} trong {elapsed:.1f}s") # Modified
+
+        self.log("Hoàn tất quá trình dịch.") # Added completion message
 
     def process_batch(self, batch_text, batch_num):
-        timer = self.TimerWithProgress()
+        timer = self.TimerWithProgress(progress_callback=self.progress_update) # Modified
         best_result = None
         best_ratio = float('inf')
         
@@ -208,8 +215,8 @@ class AdvancedTranslator:
                 trans_tokens = len(self.tokenizer.encode(result))
                 ratio = trans_tokens / src_tokens if src_tokens else 0
 
-                print(f"\n→ Batch {batch_num} - Lần {attempt+1}")
-                print(f"   Token: {src_tokens} → {trans_tokens} | Tỷ lệ: {ratio:.2f}")
+                self.log(f"→ Batch {batch_num} - Lần {attempt+1}") # Modified
+                self.log(f"   Token: {src_tokens} → {trans_tokens} | Tỷ lệ: {ratio:.2f}") # Modified
                 
                 # Lưu kết quả tốt nhất
                 if ratio > best_ratio:
@@ -222,21 +229,33 @@ class AdvancedTranslator:
                     return result, elapsed, ratio
 
             except Exception as e:
-                print(f"LỖI API: {str(e)}")
+                self.log(f"LỖI API (Batch {batch_num}, Lần {attempt+1}): {str(e)}") # Modified
                 if attempt == MAX_RETRIES:
+                    self.log(f"LỖI CUỐI CÙNG (Batch {batch_num}): {str(e)}") # Modified
                     return f"[LỖI: {str(e)}]", 0, 0
+            finally:
+                # Ensure timer stops cleanly even on error/stop
+                if timer.active:
+                    timer.stop()
 
         self.context_lines = best_result.split('\n')[-10:] if best_result else []
         return best_result, elapsed, best_ratio
 
-    def _handle_interrupt(self, signum, frame):
-        print("\n→ Yêu cầu dừng nhận được. Đang hoàn thành batch hiện tại...")
+    # New method for GUI stop button
+    def request_stop(self):
+        self.log("→ Yêu cầu dừng nhận được. Sẽ dừng sau batch hiện tại...")
         self.stop_flag = True
 
 if __name__ == "__main__":
+    # Setup signal handler only when run as script
+    def handle_interrupt_cli(signum, frame):
+        print("\n→ Yêu cầu dừng nhận được. Đang hoàn thành batch hiện tại...")
+        translator.stop_flag = True # Access the global translator instance
+
     if len(sys.argv) != 2:
         print("Cách dùng: python translator.py <input.txt>")
         sys.exit(1)
     
     translator = AdvancedTranslator()
+    signal.signal(signal.SIGINT, handle_interrupt_cli) # Setup signal handler here
     translator.execute_translation(sys.argv[1])

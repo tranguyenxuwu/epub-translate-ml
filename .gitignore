@@ -11,3 +11,4 @@ venv
 cleaner.py
 text_only.py
 test_api.py
+.env

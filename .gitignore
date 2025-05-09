@@ -12,3 +12,5 @@ cleaner.py
 text_only.py
 test_api.py
 .env
+scripts/.env
+script/output*

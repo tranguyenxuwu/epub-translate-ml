@@ -731,7 +731,7 @@ class EPUBProcessor:
 
 def main():
     """Ví dụ sử dụng"""
-    epub_path = Path(r"C:\Users\Fubuki\Downloads\gai_nga_v4_bak.epub")
+    epub_path = Path(r"C:\Users\Fubuki\Downloads\annas-arch-46138fa6bccb.epub")
     # epub_path = Path("./path/to/your/ebook.epub")
 
     config = ExtractorConfig(
@@ -740,7 +740,7 @@ def main():
         min_image_width=128,
         min_image_height=128,
         quality=95,
-        xml_filename="lightnovel_content_fixed_v2.xml" # New XML filename
+        xml_filename="lightnovel_v4.xml" # New XML filename
     )
 
     processor = EPUBProcessor(epub_path, config)

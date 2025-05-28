@@ -18,27 +18,42 @@ API_MODEL = "microsoft/mai-ds-r1:free" # Or your preferred model
 MAX_RETRIES = 3
 MIN_TOKEN_RATIO = 0.6 # Adjust as needed
 MAX_TOKEN_RATIO = 1.5 # Adjust as needed
-BATCH_SIZE = 50 # Number of text elements per API call
-CONTEXT_WINDOW = 10 # Number of previous translations to use as context
+BATCH_SIZE = 70 # Number of text elements per API call
+CONTEXT_WINDOW = 15 # Number of previous translations to use as context
 OUTPUT_ENCODING = 'utf-8'
 PROGRESS_FILE_SUFFIX = '_progress.json'
 TRANSLATED_FILE_SUFFIX = '_translated.xml'
 #RSE = "medium" # reasoning_effort, can be "low", "medium", "high", comment out if use non-google models
 
-PROMPT_TEMPLATE = """[IMPORTANT] Translate the following Japanese text snippets accurately into Vietnamese, following these instructions:
+PROMPT_TEMPLATE = """[IMPORTANT] Translate the following Japanese light novel text snippets into Vietnamese. Follow these instructions carefully:
+    1. Use a serious, polished writing style suitable for publication, but keep the translation natural and human — avoid making it sound mechanical.
+    2. Translate fully and faithfully; do not omit or summarize any content.
+    3.You may adjust sentence structure and word choices to match natural Vietnamese expression, as long as the original meaning and nuance are preserved.
+    4. Dialogue must be enclosed in parentheses, like this: "translated dialogue".
+    5. Reflect the proper level of formality or informality in characters' speech according to the context.
+    6. Each input is in the format id: text_to_translate. Return the result as id: translated_text.
+    7. Output only the Vietnamese translations, one per line, corresponding exactly to the input IDs — no extra notes or explanations.
 
-1. Pay close attention to context, tone, and character honorifics/pronouns.
-2. Translate fully and faithfully; do not omit any details.
-3. You may adjust sentence structures to sound natural in Vietnamese conversations, while keeping the original meaning.
-4. Keep dialogue enclosed in parentheses → format as: `(translated dialogue)`.
-5. Adjust the level of formality/informality appropriately according to the context.
-6. For each input line in the format `id: text_to_translate`, return the result in the format `id: translated_text`.
-7. Return only the Vietnamese translations, one per line, corresponding exactly to the input IDs. Do not include explanations or extra content.
-Additional note:
-Use the informal pronouns "tớ" (speaker) and "cậu" (listener) between the two main characters, Mamiya Yuu and Aisaka Akito. However, if Aisaka Akito is the current speaker, use "tôi" (speaker) and "cậu" (listener) instead.
-Note: This rule applies only to these two characters
+Additional note about this light novel:
+This is a sweet, slow-burn romantic comedy light novel that follows the secret friendship-turned-romance between high school students *Maehara Maki* and *Asanagi Umi*. The tone is warm, cozy, and emotionally sincere, with moments of teasing, quiet affection, and heartfelt vulnerability.
+Maki is a socially awkward transfer student who initially has no friends. His bond with Umi begins as a hidden Friday-after-school hangout and gradually deepens into a genuine romantic relationship. Umi, often called “the second cutest girl in the class,” is cheerful, clever, and sometimes playfully mischievous — yet also caring and emotionally intelligent. Their connection is intimate and evolving, with mutual emotional growth.
+The story features slice-of-life moments — gaming, eating fast food, watching movies — and tender milestones in their relationship: their first Christmas as a couple, nursing each other through illness, welcoming the New Year together, exchanging gifts on Valentine’s and White Day, and more. Each scene highlights their growing trust and affection.
+Please keep the romantic tension, inner emotions, and everyday charm intact. Dialogue should reflect each character’s personality and mood — sincere, gentle, flustered, or teasing — while narration should read naturally and fluidly in Vietnamese. Preserve casual intimacy, especially in scenes where the characters grow closer or become emotionally vulnerable.
 
----
+Main characters that will appear:
+- Maehara Maki (前原真樹) – The male protagonist. A transfer student with little social experience. Earnest, awkward, and slowly opening up thanks to Umi’s presence.
+- Asanagi Umi (朝凪海) – The main heroine. Smart, kind, a bit playful, and called “the second cutest girl in the class.” She secretly spends time with Maki and gradually falls for him.
+- Amami Yuu (天海夕) – Umi’s childhood friend and considered the No.1 beauty in class. Bright and popular.
+- Nitta Nina (新田新奈) – Often hangs out with Umi and Yuu. Loyal to her friends but noticeably cold toward others.
+
+Style:
+- Use a warm, polished, and human tone suited for publication.
+- Dialogue should sound natural and emotionally expressive (sweet, teasing, flustered, etc.).
+- Maintain formatting: narration outside, dialogue inside parentheses: "dialouge".
+
+
+Please translate the following with this context in mind.
+            
 
 Previous context (do not translate this part):
 {context}

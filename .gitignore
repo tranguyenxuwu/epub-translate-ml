@@ -14,3 +14,4 @@ test_api.py
 .env
 scripts/.env
 script/output*
+sample_book

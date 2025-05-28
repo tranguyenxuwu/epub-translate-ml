@@ -188,7 +188,7 @@ if __name__ == '__main__':
     script_dir = Path(__file__).parent.resolve()
     
     # Define input XML path relative to the script directory
-    xml_input_path = script_dir / 'output_1/lightnovel_content_translated.xml'
+    xml_input_path = script_dir / 'output/lightnovel_content_translated.xml'
     
     # Define output EPUB path relative to the script directory's 'output' subfolder
     epub_output_filename = 'lightnovel_output.epub'

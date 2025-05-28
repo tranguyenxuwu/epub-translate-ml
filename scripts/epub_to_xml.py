@@ -181,12 +181,19 @@ class ContentProcessor:
 
             decoded_href = urllib.parse.unquote(absolute_href)
             potential_hrefs = [
-                decoded_href, absolute_href, href,
+                decoded_href,
+                absolute_href,
+                href,
                 decoded_href.lstrip('./').lstrip('../'),
                 absolute_href.lstrip('./').lstrip('../'),
                 href.lstrip('./').lstrip('../')
             ]
-            common_roots = ['OEBPS', 'OPS', 'EPUB', 'Text', 'text'] # Added 'text' common in some EPUBs
+            # Add the direct href and its unquoted version to the beginning of the list
+            # to prioritize direct matches, especially for paths like 'item/xhtml/p-001.xhtml'
+            potential_hrefs.insert(0, urllib.parse.unquote(href))
+            potential_hrefs.insert(1, href)
+
+            common_roots = ['OEBPS', 'OPS', 'EPUB', 'Text', 'text', 'item', 'item/xhtml', 'item/image'] # Added 'item', 'item/xhtml', 'item/image'
             original_unquoted = urllib.parse.unquote(href)
             for root_dir in common_roots:
                  potential_hrefs.append(f"{root_dir}/{original_unquoted.lstrip('/')}")
@@ -472,78 +479,77 @@ class EPUBProcessor:
             self.logger.error("Không thể trích xuất chương, sách EPUB chưa được tải.")
             return
         nav_item = None
-        is_ncx = False
         self.chapters = []
-        try:
-            nav_item_epub3 = None
-            self.logger.info("Đang tìm tài liệu điều hướng EPUB 3 (thuộc tính 'nav')...")
-            for item in self.book.get_items():
-                if 'nav' in getattr(item, 'properties', []):
-                    nav_item_epub3 = item
-                    self.logger.info(f"Tìm thấy mục có thuộc tính 'nav': {item.get_name()}")
-                    break
-            if nav_item_epub3:
-                nav_item = nav_item_epub3
-                self.logger.info(f"Sử dụng tài liệu điều hướng EPUB 3: {nav_item.get_name()}")
-            else:
-                self.logger.info("Không tìm thấy mục EPUB 3 Nav. Đang tìm NCX EPUB 2 (ITEM_NAVIGATION)...")
-                nav_items_ncx = list(self.book.get_items_of_type(ebooklib.ITEM_NAVIGATION))
-                if nav_items_ncx:
-                    nav_item = nav_items_ncx[0]
-                    is_ncx = True
-                    self.logger.info(f"Tìm thấy và sử dụng tài liệu điều hướng NCX EPUB 2: {nav_item.get_name()}")
-                else:
-                    self.logger.warning("Không tìm thấy tài liệu điều hướng EPUB 3 (thuộc tính 'nav') hay EPUB 2 NCX (ITEM_NAVIGATION).")
-        except Exception as e:
-            self.logger.error(f"Lỗi xảy ra trong quá trình tìm kiếm tài liệu điều hướng: {e}", exc_info=True)
+        specific_nav_file_name = "navigation-documents.xhtml" # Target specific file
+
+        self.logger.info(f"Đang tìm tài liệu điều hướng cụ thể: '{specific_nav_file_name}'...")
+        for item in self.book.get_items():
+            # Normalize item name for comparison
+            item_name_normalized = Path(urllib.parse.unquote(item.get_name())).name
+            if item_name_normalized == specific_nav_file_name:
+                nav_item = item
+                self.logger.info(f"Tìm thấy tài liệu điều hướng được chỉ định: {item.get_name()}")
+                break
+
         if not nav_item:
-            self.logger.error("Không thể tìm thấy tài liệu điều hướng nào. Không thể trích xuất chương.")
+            self.logger.error(f"Không tìm thấy tài liệu điều hướng '{specific_nav_file_name}'. Không thể trích xuất chương theo yêu cầu.")
+            # Fallback or alternative logic can be placed here if needed
+            # For now, we strictly adhere to using only the specified file.
+            # self.logger.info("Attempting fallback to EPUB3 nav or NCX...")
+            # ... [original fallback logic could be re-inserted here if desired] ...
             return
+
         try:
-            self.logger.info(f"Đang xử lý tài liệu điều hướng: {nav_item.get_name()} (Loại: {'NCX' if is_ncx else 'XHTML'})")
+            self.logger.info(f"Đang xử lý tài liệu điều hướng: {nav_item.get_name()} (Loại: XHTML)")
             content = nav_item.get_content()
+            # Base href for resolving relative links within this navigation document
             nav_doc_base_href = urllib.parse.unquote(nav_item.get_name())
-            if is_ncx:
-                soup = BeautifulSoup(content, 'xml')
-                for nav_point in soup.find_all('navPoint'):
-                    nav_label = nav_point.find('navLabel')
-                    title = nav_label.find('text').get_text().strip() if nav_label and nav_label.find('text') else f"Điểm NCX không tên {len(self.chapters) + 1}"
-                    content_tag = nav_point.find('content')
-                    if content_tag and content_tag.get('src'):
-                        href_raw = content_tag['src']
-                        href_resolved = urllib.parse.urljoin(nav_doc_base_href, href_raw)
-                        normalized_href = urllib.parse.unquote(href_resolved).split('#')[0]
-                        normalized_href = str(Path(normalized_href)).replace('\\', '/').lstrip('./').lstrip('../')
-                        if normalized_href:
-                            self.chapters.append((normalized_href, title))
-                            self.logger.debug(f"Thêm chương (NCX): '{title}' -> '{normalized_href}' (Raw: '{href_raw}')")
-                        else:
-                            self.logger.warning(f"Bỏ qua navPoint NCX với src trống hoặc không hợp lệ: {href_raw}")
+            # Ensure nav_doc_base_href is a directory path if it's a file, for urljoin
+            if not nav_doc_base_href.endswith('/'):
+                 nav_doc_base_href = str(Path(nav_doc_base_href).parent) + '/'
+
+            soup = BeautifulSoup(content, self.config.parser)
+            # Look for <nav epub:type="toc"> specifically as per navigation-documents.xhtml structure
+            nav_toc = soup.find('nav', attrs={'epub:type': 'toc'})
+
+            if nav_toc:
+                self.logger.info(f"Tìm thấy <nav epub:type='toc'> trong {nav_item.get_name()}.")
+                for link in nav_toc.find_all('a', href=True):
+                    href_raw = link['href']
+                    if not href_raw or href_raw.startswith('#'):
+                        self.logger.debug(f"Bỏ qua liên kết nav với href trống hoặc chỉ là fragment: {href_raw}")
+                        continue
+
+                    # Resolve href relative to the navigation document's path
+                    # Example: if nav_doc_base_href is 'item/' and href_raw is 'xhtml/p-001.xhtml',
+                    # resolved should be 'item/xhtml/p-001.xhtml'
+                    href_resolved = urllib.parse.urljoin(nav_doc_base_href, href_raw)
+                    normalized_href = urllib.parse.unquote(href_resolved).split('#')[0]
+                    # Normalize path for consistency (e.g. remove './', '../', convert '\' to '/')
+                    # The key is to match how spine items are normalized later.
+                    # A common approach is to make it relative to the EPUB root.
+                    # For `item/xhtml/p-001.xhtml`, it should remain as such if 'item' is a root-level dir in OPF manifest.
+                    # If `extract_image_data` uses `item/` as a base, this should align.
+                    # Let's assume paths in nav are relative to EPUB root or a known base like 'item/'
+                    # The `Path(normalized_href).as_posix()` can help standardize.
+                    # And then ensure it matches the format used in `process_content` for `item_href_normalized`
+                    normalized_href = str(Path(normalized_href).as_posix()).lstrip('./')
+                    # If the EPUB structure has a common base like 'item/', ensure it's part of normalized_href
+                    # This needs to be consistent with how spine hrefs are processed.
+                    # For now, we assume the resolved href is already correct relative to the EPUB root or a common base.
+
+                    if normalized_href:
+                        link_text = ' '.join(link.stripped_strings) or f"Liên kết không tên {len(self.chapters) + 1}"
+                        self.chapters.append((normalized_href, link_text))
+                        self.logger.debug(f"Thêm chương (từ {specific_nav_file_name}): '{link_text}' -> '{normalized_href}' (Raw: '{href_raw}', Resolved: '{href_resolved}')")
                     else:
-                         self.logger.debug(f"Bỏ qua navPoint NCX không có content src hợp lệ: {nav_point.get('id', 'no id')}")
-            else: # XHTML Nav Doc
-                soup = BeautifulSoup(content, self.config.parser)
-                nav_container = soup.find('nav', attrs={'epub:type': 'toc'}) or soup.find('nav') or soup.body
-                if nav_container:
-                    for link in nav_container.find_all('a', href=True):
-                        href_raw = link['href']
-                        if not href_raw or href_raw.startswith('#'):
-                             self.logger.debug(f"Bỏ qua liên kết nav với href trống hoặc chỉ là fragment: {href_raw}")
-                             continue
-                        href_resolved = urllib.parse.urljoin(nav_doc_base_href, href_raw)
-                        normalized_href = urllib.parse.unquote(href_resolved).split('#')[0]
-                        normalized_href = str(Path(normalized_href)).replace('\\', '/').lstrip('./').lstrip('../')
-                        if normalized_href:
-                            link_text = ' '.join(link.stripped_strings) or f"Liên kết không tên {len(self.chapters) + 1}"
-                            self.chapters.append((normalized_href, link_text))
-                            self.logger.debug(f"Thêm chương (XHTML): '{link_text}' -> '{normalized_href}' (Raw: '{href_raw}')")
-                        else:
-                            self.logger.warning(f"Bỏ qua liên kết nav với href trống sau khi chuẩn hóa: {href_raw}")
-                else:
-                    self.logger.warning(f"Không tìm thấy thẻ chứa điều hướng phù hợp trong {nav_item.get_name()}")
+                        self.logger.warning(f"Bỏ qua liên kết nav với href trống sau khi chuẩn hóa: {href_raw}")
+            else:
+                self.logger.warning(f"Không tìm thấy <nav epub:type='toc'> trong {nav_item.get_name()}. Kiểm tra cấu trúc file.")
         except Exception as e:
             self.logger.error(f"Lỗi khi phân tích nội dung tài liệu điều hướng {nav_item.get_name()}: {str(e)}", exc_info=True)
-        self.logger.info(f"Trích xuất được {len(self.chapters)} chương từ điều hướng.")
+
+        self.logger.info(f"Trích xuất được {len(self.chapters)} chương từ '{specific_nav_file_name}'.")
 
 
     def process_content(self):
@@ -604,6 +610,8 @@ class EPUBProcessor:
             chapter_count = 0
             paragraph_count = 0
             image_count = 0
+            default_chapter_id_val = "ch_frontmatter"
+            default_chapter_title_val = "Front Matter"
 
             # --- Metadata block (remains commented out) ---
             # self.extract_metadata() # Call if needed, but don't add to XML per spec
@@ -622,17 +630,18 @@ class EPUBProcessor:
 
                 elif item_type == "paragraph":
                     if current_chapter_element is None:
-                        self.logger.warning(f"Found paragraph outside of a chapter context. Skipping text: '{item.get('text', '')[:50]}...'")
-                        # Logic to handle orphan paragraphs (optional)
-                        # if root.find('chapter') is None: # Create default if none exist
-                        #     chapter_count += 1
-                        #     current_chapter_element = ET.SubElement(root, "chapter", id=f"ch{chapter_count}", title="Orphan Content")
-                        # elif root.findall('chapter'): # Add to last chapter if chapters exist
-                        #     current_chapter_element = root.findall('chapter')[-1]
-                        # else: # Skip if no chapters created yet
-                        #     continue
-                        continue # Skip orphan for now
-
+                        # Attempt to find or create a default chapter for orphan content
+                        found_default_chapter = root.find(f".//chapter[@id='{default_chapter_id_val}']")
+                        if found_default_chapter is not None:
+                            current_chapter_element = found_default_chapter
+                        else:
+                            self.logger.info(f"Paragraph found before any main chapter. Creating '{default_chapter_title_val}' chapter (ID: {default_chapter_id_val}).")
+                            current_chapter_element = ET.SubElement(
+                                root, "chapter",
+                                id=default_chapter_id_val,
+                                title=default_chapter_title_val
+                            )
+                    
                     paragraph_count += 1
                     para_elem = ET.SubElement(
                         current_chapter_element, "paragraph",
@@ -641,14 +650,22 @@ class EPUBProcessor:
                     if item.get("role"):
                         para_elem.set("role", item["role"])
                     text_elem = ET.SubElement(para_elem, "text")
-                    # Text should already be cleaned by process_tag_content's flush_text
                     text_elem.text = item.get("text", "")
                     self.logger.debug(f"  Added XML paragraph: id='p{paragraph_count}' to chapter {current_chapter_element.get('id')}")
 
                 elif item_type == "image":
                     if current_chapter_element is None:
-                        self.logger.warning(f"Found image outside of a chapter context. Skipping image: {item.get('filename')}")
-                        continue # Skip orphan image
+                        # Attempt to find or create a default chapter for orphan content
+                        found_default_chapter = root.find(f".//chapter[@id='{default_chapter_id_val}']")
+                        if found_default_chapter is not None:
+                            current_chapter_element = found_default_chapter
+                        else:
+                            self.logger.info(f"Image found before any main chapter. Creating '{default_chapter_title_val}' chapter (ID: {default_chapter_id_val}).")
+                            current_chapter_element = ET.SubElement(
+                                root, "chapter",
+                                id=default_chapter_id_val,
+                                title=default_chapter_title_val
+                            )
 
                     image_count += 1
                     xml_file_path = self.base_dir / self.config.xml_filename
@@ -710,8 +727,8 @@ class EPUBProcessor:
         try:
             self.logger.info(f"Đang xử lý EPUB: {self.epub_path}")
             if not self.epub_path.exists():
-                 self.logger.error(f"File EPUB không tồn tại: {self.epub_path}")
-                 return False
+                self.logger.error(f"File EPUB không tồn tại: {self.epub_path}")
+                return False
             self.book = epub.read_epub(str(self.epub_path))
             self.content_processor = ContentProcessor(
                 self.book, self.image_processor, self.logger
@@ -731,16 +748,16 @@ class EPUBProcessor:
 
 def main():
     """Ví dụ sử dụng"""
-    epub_path = Path(r"C:\Users\Fubuki\Downloads\annas-arch-46138fa6bccb.epub")
+    epub_path = Path(r"C:\Users\Fubuki\Downloads\annas-arch-5facc87aca1b.epub")
     # epub_path = Path("./path/to/your/ebook.epub")
 
     config = ExtractorConfig(
-        output_dir="output_extract_fixed_v2", # Yet another new directory
+        output_dir="output", # Yet another new directory
         image_dir="images",
         min_image_width=128,
         min_image_height=128,
         quality=95,
-        xml_filename="lightnovel_v4.xml" # New XML filename
+        xml_filename="lightnovel_content.xml" # New XML filename
     )
 
     processor = EPUBProcessor(epub_path, config)

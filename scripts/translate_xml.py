@@ -14,7 +14,7 @@ from openai import OpenAI
 load_dotenv()
 API_KEY = os.getenv("API_KEY")
 BASE_URL = "https://openrouter.ai/api/v1"
-API_MODEL = "microsoft/mai-ds-r1:free" # Or your preferred model
+API_MODEL = "deepseek/deepseek-r1-0528:free" # Or your preferred model
 MAX_RETRIES = 3
 MIN_TOKEN_RATIO = 0.6 # Adjust as needed
 MAX_TOKEN_RATIO = 1.5 # Adjust as needed
@@ -25,41 +25,38 @@ PROGRESS_FILE_SUFFIX = '_progress.json'
 TRANSLATED_FILE_SUFFIX = '_translated.xml'
 #RSE = "medium" # reasoning_effort, can be "low", "medium", "high", comment out if use non-google models
 
-PROMPT_TEMPLATE = """[IMPORTANT] Translate the following Japanese light novel text snippets into Vietnamese. Follow these instructions carefully:
-    1. Use a serious, polished writing style suitable for publication, but keep the translation natural and human — avoid making it sound mechanical.
-    2. Translate fully and faithfully; do not omit or summarize any content.
-    3.You may adjust sentence structure and word choices to match natural Vietnamese expression, as long as the original meaning and nuance are preserved.
-    4. Dialogue must be enclosed in parentheses, like this: "translated dialogue".
-    5. Reflect the proper level of formality or informality in characters' speech according to the context.
-    6. Each input is in the format id: text_to_translate. Return the result as id: translated_text.
-    7. Output only the Vietnamese translations, one per line, corresponding exactly to the input IDs — no extra notes or explanations.
+PROMPT_TEMPLATE = """
+[IMPORTANT] Translate the following English light novel text snippets into Vietnamese. Follow these instructions carefully:
 
-Additional note about this light novel:
-This is a sweet, slow-burn romantic comedy light novel that follows the secret friendship-turned-romance between high school students *Maehara Maki* and *Asanagi Umi*. The tone is warm, cozy, and emotionally sincere, with moments of teasing, quiet affection, and heartfelt vulnerability.
-Maki is a socially awkward transfer student who initially has no friends. His bond with Umi begins as a hidden Friday-after-school hangout and gradually deepens into a genuine romantic relationship. Umi, often called “the second cutest girl in the class,” is cheerful, clever, and sometimes playfully mischievous — yet also caring and emotionally intelligent. Their connection is intimate and evolving, with mutual emotional growth.
-The story features slice-of-life moments — gaming, eating fast food, watching movies — and tender milestones in their relationship: their first Christmas as a couple, nursing each other through illness, welcoming the New Year together, exchanging gifts on Valentine’s and White Day, and more. Each scene highlights their growing trust and affection.
-Please keep the romantic tension, inner emotions, and everyday charm intact. Dialogue should reflect each character’s personality and mood — sincere, gentle, flustered, or teasing — while narration should read naturally and fluidly in Vietnamese. Preserve casual intimacy, especially in scenes where the characters grow closer or become emotionally vulnerable.
+1. Use a natural, emotionally expressive, and polished Vietnamese writing style suitable for publication — avoid mechanical or overly literal translations.
+2. Translate completely and faithfully; do not omit, simplify, or summarize any content.
+3. Adapt sentence structure and word choices to match natural Vietnamese phrasing, as long as the original nuance, tone, and character emotion are preserved.
+4. Enclose all dialogue in Vietnamese-style quotation marks, like this: "translated dialogue".
+5. Ensure each character’s speech reflects their personality and emotional state — whether shy, blunt, teasing, sincere, or flustered.
+6. Each line of input is in the format id: text_to_translate. Return the result as id: translated_text.
+7. Output only the translated lines, no extra commentary or explanation — one line per input ID.
 
-Main characters that will appear:
-- Maehara Maki (前原真樹) – The male protagonist. A transfer student with little social experience. Earnest, awkward, and slowly opening up thanks to Umi’s presence.
-- Asanagi Umi (朝凪海) – The main heroine. Smart, kind, a bit playful, and called “the second cutest girl in the class.” She secretly spends time with Maki and gradually falls for him.
-- Amami Yuu (天海夕) – Umi’s childhood friend and considered the No.1 beauty in class. Bright and popular.
-- Nitta Nina (新田新奈) – Often hangs out with Umi and Yuu. Loyal to her friends but noticeably cold toward others.
+Contextual Information (do not translate):
 
-Style:
-- Use a warm, polished, and human tone suited for publication.
-- Dialogue should sound natural and emotionally expressive (sweet, teasing, flustered, etc.).
-- Maintain formatting: narration outside, dialogue inside parentheses: "dialouge".
+This light novel is a wholesome, zero-misunderstanding romantic comedy focused on Sasahara Naoya and Shirogane Koyuki — a shy but sharp-tongued girl who struggles to express her feelings honestly. After Naoya’s sincere confession, their relationship gradually deepens. The story emphasizes emotional honesty, quiet intimacy, gentle romantic tension, and meaningful character growth through small everyday moments.
 
+Characters:
+- Sasahara Naoya: Kind, emotionally open, and straightforward. He’s calm and steady, giving Koyuki space while gently supporting her.
+- Shirogane Koyuki: Intelligent, sarcastic, and easily flustered. She hides her affection behind cutting remarks, but is gradually learning to open her heart.
+
+Tone & Style:
+- The narration should be fluid, warm, and human — like a well-translated light novel, not a textbook.
+- Dialogue must feel emotionally real, true to character, and appropriately casual/formal depending on the scene.
+- Capture the subtle sweetness, awkward tension, and everyday charm of the characters’ growing relationship.
 
 Please translate the following with this context in mind.
-            
 
 Previous context (do not translate this part):
 {context}
 
 Content to translate (each item on a new line, formatted as 'id: text_to_translate'):
 {content}
+
 """
 
 # --- Globals ---
@@ -102,8 +99,7 @@ class XMLTranslator:
         self.progress_file = self._generate_output_path(input_xml_path, PROGRESS_FILE_SUFFIX)
 
         if not API_KEY:
-            print("ERROR: API_KEY not found in environment variables or .env file.")
-            sys.exit(1)
+            raise ValueError("ERROR: API_KEY not found in environment variables or .env file.")
 
         self.client = OpenAI(base_url=BASE_URL, api_key=API_KEY)
         try:
@@ -116,6 +112,12 @@ class XMLTranslator:
         self.translation_cache = {}
         self.context_lines = []
         self.elements_to_translate = []
+        # Initialize with default values
+        self.prompt_template = PROMPT_TEMPLATE
+        self.model = API_MODEL
+        self.batch_size = BATCH_SIZE
+        # Initialize interrupt flag
+        self._interrupt_requested = False
 
     def _generate_output_path(self, base_path, suffix):
         base_name = os.path.splitext(base_path)[0]
@@ -204,9 +206,9 @@ class XMLTranslator:
              print(f"DEBUG: Checking first extracted element ID '{first_elem_id}' against loaded cache keys.")
              print(f"DEBUG: Is '{first_elem_id}' in cache? {first_elem_id in self.translation_cache}")
              # Check a later element too, if available
-             if len(self.elements_to_translate) > BATCH_SIZE:
-                 try: # Add try-except in case elements_to_translate is shorter than BATCH_SIZE
-                     later_elem_id = self.elements_to_translate[BATCH_SIZE]['id']
+             if len(self.elements_to_translate) > self.batch_size:
+                 try: # Add try-except in case elements_to_translate is shorter than batch_size
+                     later_elem_id = self.elements_to_translate[self.batch_size]['id']
                      print(f"DEBUG: Checking element ID '{later_elem_id}' (around batch 2 start) against loaded cache keys.")
                      print(f"DEBUG: Is '{later_elem_id}' in cache? {later_elem_id in self.translation_cache}")
                  except IndexError:
@@ -225,9 +227,14 @@ class XMLTranslator:
         batch_num_overall = 0 # For print statements
         original_total_to_translate = len(elements_to_process) # For percentage calculation relative to start of this run
 
-        while elements_to_process and not stop_flag: # Loop while there are items and no stop signal
+        while elements_to_process and not stop_flag and not self._check_interrupt(): # Loop while there are items and no stop signal
+            # Additional check at start of each iteration
+            if self._check_interrupt():
+                print("Translation interrupted by user request.")
+                break
+                
             batch_num_overall += 1
-            current_batch_size = min(len(elements_to_process), BATCH_SIZE)
+            current_batch_size = min(len(elements_to_process), self.batch_size)
             batch = elements_to_process[:current_batch_size]
 
             if not batch: # Should ideally not be reached if elements_to_process is not empty
@@ -242,6 +249,11 @@ class XMLTranslator:
                   f"Attempting {len(batch)} elements (approx items {current_progress_count + 1} to {current_progress_count + len(batch)} of {original_total_to_translate} initial). "
                   f"Remaining in queue: {len(elements_to_process)}. Starting ID: {batch_ids[0] if batch_ids else 'N/A'}")
             # --- End Progress Print Statement ---
+
+            # Check for interrupt before processing batch
+            if self._check_interrupt():
+                print("Translation interrupted before processing batch.")
+                break
 
             translations_tuple = self.process_batch(batch_texts_with_ids, batch_ids)
             translations, is_complete = translations_tuple if translations_tuple else (None, False)
@@ -294,6 +306,12 @@ class XMLTranslator:
         self.save_progress() # Final save
 
     def process_batch(self, batch_texts_with_ids, original_batch_ids): # original_batch_ids for error reporting if needed
+        # Check stop flag before starting batch processing
+        global stop_flag
+        if stop_flag:
+            print("Stop flag detected, skipping batch processing.")
+            return None, False
+            
         timer = TimerWithProgress()
         # best_result_lines = None # These variables seem unused
         # best_avg_ratio = -1
@@ -304,7 +322,7 @@ class XMLTranslator:
         # Prepare context
         context_str = "\n".join(self.context_lines[-CONTEXT_WINDOW:])
 
-        prompt = PROMPT_TEMPLATE.format(
+        prompt = self.prompt_template.format(
             context=context_str if context_str else "N/A",
             content=content_to_translate
         )
@@ -312,12 +330,13 @@ class XMLTranslator:
         src_tokens = len(self.tokenizer.encode(content_to_translate)) if self.tokenizer else len(content_to_translate.split())
 
         for attempt in range(MAX_RETRIES):
-            if stop_flag:
+            if stop_flag or self._check_interrupt():
+                print("Translation interrupted during API retry loop.")
                 return None, False # Interrupted
             try:
                 timer.start()
                 response = self.client.chat.completions.create(
-                    model=API_MODEL,
+                    model=self.model,
                     messages=[{"role": "user", "content": prompt}],
                     #temperature=0.3,
                     # max_tokens can be tricky; estimate based on source length + buffer
@@ -469,26 +488,65 @@ class XMLTranslator:
             print(f"An unexpected error occurred during XML rebuild: {e}")
             return False
 
+    def set_custom_prompt(self, custom_prompt: str):
+        """Set a custom prompt template for translation"""
+        self.prompt_template = custom_prompt
+        print(f"Custom prompt template set. Length: {len(custom_prompt)} characters")
+    
+    def set_model(self, model_name: str):
+        """Set a custom model for translation"""
+        self.model = model_name
+        print(f"Translation model set to: {model_name}")
+    
+    def set_batch_size(self, batch_size: int):
+        """Set a custom batch size for translation"""
+        self.batch_size = batch_size
+        print(f"Batch size set to: {batch_size}")
+
+    def stop_translation(self):
+        """Stop the current translation process"""
+        global stop_flag
+        stop_flag = True
+        print("Stop signal sent. Translation will finish current batch and save progress.")
+        # Also try to interrupt any ongoing API call by setting a flag
+        self._interrupt_requested = True
+    
+    def _check_interrupt(self):
+        """Check if translation should be interrupted"""
+        global stop_flag
+        return stop_flag or getattr(self, '_interrupt_requested', False)
+    
+    def get_progress_info(self):
+        """Get current translation progress information"""
+        self.load_progress()
+        if not hasattr(self, 'elements_to_translate') or not self.elements_to_translate:
+            self.extract_translatable_elements()
+        
+        total_elements = len(self.elements_to_translate) if self.elements_to_translate else 0
+        translated_elements = len(self.translation_cache)
+        
+        return {
+            'total_elements': total_elements,
+            'translated_elements': translated_elements,
+            'completion_percentage': (translated_elements / total_elements * 100) if total_elements > 0 else 0,
+            'remaining_elements': total_elements - translated_elements
+        }
+
+    def reset_interrupt_flag(self):
+        """Reset the interrupt flag for a new translation session"""
+        self._interrupt_requested = False
+        global stop_flag
+        stop_flag = False
+        print("Translation flags reset. Ready for new translation.")
+
     def run(self):
+        # Reset interrupt flag at start of new run
+        self.reset_interrupt_flag()
+        
         if not self.extract_translatable_elements():
             return
         self.translate_elements()
-        if not stop_flag:
+        if not stop_flag and not self._check_interrupt():
             self.rebuild_xml()
         else:
             print("Process stopped before rebuilding XML. Run again to complete.")
-
-# --- Main Execution ---
-if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print("Usage: python translate_xml.py <path_to_input_xml>")
-        sys.exit(1)
-
-    input_file = sys.argv[1]
-
-    if not os.path.exists(input_file):
-        print(f"Error: Input XML file not found: {input_file}")
-        sys.exit(1)
-
-    translator = XMLTranslator(input_file)
-    translator.run()

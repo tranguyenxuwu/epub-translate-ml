@@ -1,4 +1,9 @@
 openai
+ebooklib
+beautifulsoup4
+requests
+lxml
+pillow
+streamlit
 python-dotenv
 tiktoken
-customtkinter

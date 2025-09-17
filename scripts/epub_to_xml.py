@@ -193,7 +193,10 @@ class ContentProcessor:
             potential_hrefs.insert(0, urllib.parse.unquote(href))
             potential_hrefs.insert(1, href)
 
-            common_roots = ['OEBPS', 'OPS', 'EPUB', 'Text', 'text', 'item', 'item/xhtml', 'item/image'] # Added 'item', 'item/xhtml', 'item/image'
+            common_roots = [
+                'OEBPS', 'OPS', 'EPUB', 'Text', 'text', 'item', 'item/xhtml', 'item/image',
+                'EPUB/Text', 'OEBPS/Text', 'content', 'src', 'html', 'xhtml'
+            ]  # Extended list to support various EPUB structures
             original_unquoted = urllib.parse.unquote(href)
             for root_dir in common_roots:
                  potential_hrefs.append(f"{root_dir}/{original_unquoted.lstrip('/')}")
@@ -454,7 +457,6 @@ class EPUBProcessor:
         self.logger = logging.getLogger(__name__)
         self.logger.info(f"Logging đã được thiết lập. Log file: {log_file}")
 
-
     def extract_metadata(self) -> Dict[str, str]:
         """Trích xuất metadata từ EPUB (không thêm vào XML theo format yêu cầu)"""
         if not self.book:
@@ -473,83 +475,151 @@ class EPUBProcessor:
         return metadata
 
     def extract_chapters(self):
-        """Trích xuất danh sách các chương từ tài liệu điều hướng (Robust version)"""
-        # --- Using the robust version from previous successful run ---
+        """Trích xuất danh sách các chương từ tài liệu điều hướng (Enhanced version with multiple format support)"""
         if not self.book:
             self.logger.error("Không thể trích xuất chương, sách EPUB chưa được tải.")
             return
-        nav_item = None
+        
         self.chapters = []
-        specific_nav_file_name = "navigation-documents.xhtml" # Target specific file
-
-        self.logger.info(f"Đang tìm tài liệu điều hướng cụ thể: '{specific_nav_file_name}'...")
-        for item in self.book.get_items():
-            # Normalize item name for comparison
-            item_name_normalized = Path(urllib.parse.unquote(item.get_name())).name
-            if item_name_normalized == specific_nav_file_name:
-                nav_item = item
-                self.logger.info(f"Tìm thấy tài liệu điều hướng được chỉ định: {item.get_name()}")
+        nav_item = None
+        
+        # List of potential navigation files to try (in order of preference)
+        potential_nav_files = [
+            "navigation-documents.xhtml",
+            "TableOfContents.xhtml", 
+            "toc.xhtml",
+            "nav.xhtml",
+            "contents.xhtml"
+        ]
+        
+        # Try to find one of the navigation files
+        self.logger.info("Searching for navigation document...")
+        for nav_file_name in potential_nav_files:
+            self.logger.debug(f"Looking for: '{nav_file_name}'")
+            for item in self.book.get_items():
+                # Check both exact filename and path-based matching
+                item_name_normalized = Path(urllib.parse.unquote(item.get_name())).name
+                item_path_parts = Path(urllib.parse.unquote(item.get_name())).parts
+                
+                # Check exact filename match
+                if item_name_normalized == nav_file_name:
+                    nav_item = item
+                    self.logger.info(f"Found navigation document by filename: {item.get_name()}")
+                    break
+                    
+                # Check if filename appears anywhere in the path (for nested structures)
+                if nav_file_name in item_path_parts:
+                    nav_item = item
+                    self.logger.info(f"Found navigation document by path match: {item.get_name()}")
+                    break
+            
+            if nav_item:
                 break
+        
+        # If no specific nav file found, try EPUB3 standard nav or NCX as fallback
+        if not nav_item:
+            self.logger.warning("No specific navigation document found. Trying EPUB3 nav or NCX fallback...")
+            
+            # Try EPUB3 nav
+            for item in self.book.get_items():
+                if item.get_type() == ebooklib.ITEM_NAV:
+                    nav_item = item
+                    self.logger.info(f"Found EPUB3 navigation item: {item.get_name()}")
+                    break
+            
+            # Try NCX as last resort
+            if not nav_item:
+                for item in self.book.get_items():
+                    if item.get_type() == ebooklib.ITEM_DOCUMENT and item.get_name().endswith('.ncx'):
+                        nav_item = item
+                        self.logger.info(f"Found NCX navigation item: {item.get_name()}")
+                        break
 
         if not nav_item:
-            self.logger.error(f"Không tìm thấy tài liệu điều hướng '{specific_nav_file_name}'. Không thể trích xuất chương theo yêu cầu.")
-            # Fallback or alternative logic can be placed here if needed
-            # For now, we strictly adhere to using only the specified file.
-            # self.logger.info("Attempting fallback to EPUB3 nav or NCX...")
-            # ... [original fallback logic could be re-inserted here if desired] ...
+            self.logger.error("No navigation document found. Cannot extract chapters.")
             return
 
         try:
-            self.logger.info(f"Đang xử lý tài liệu điều hướng: {nav_item.get_name()} (Loại: XHTML)")
+            self.logger.info(f"Processing navigation document: {nav_item.get_name()}")
             content = nav_item.get_content()
-            # Base href for resolving relative links within this navigation document
+            
+            # Base href for resolving relative links
             nav_doc_base_href = urllib.parse.unquote(nav_item.get_name())
-            # Ensure nav_doc_base_href is a directory path if it's a file, for urljoin
             if not nav_doc_base_href.endswith('/'):
-                 nav_doc_base_href = str(Path(nav_doc_base_href).parent) + '/'
+                nav_doc_base_href = str(Path(nav_doc_base_href).parent) + '/'
 
             soup = BeautifulSoup(content, self.config.parser)
-            # Look for <nav epub:type="toc"> specifically as per navigation-documents.xhtml structure
-            nav_toc = soup.find('nav', attrs={'epub:type': 'toc'})
-
+            
+            # Method 1: Look for EPUB3 <nav epub:type="toc">
+            nav_toc = soup.find('nav', attrs={'epub:type': 'toc'}) or soup.find('nav', id='toc')
+            
             if nav_toc:
-                self.logger.info(f"Tìm thấy <nav epub:type='toc'> trong {nav_item.get_name()}.")
-                for link in nav_toc.find_all('a', href=True):
-                    href_raw = link['href']
-                    if not href_raw or href_raw.startswith('#'):
-                        self.logger.debug(f"Bỏ qua liên kết nav với href trống hoặc chỉ là fragment: {href_raw}")
-                        continue
-
-                    # Resolve href relative to the navigation document's path
-                    # Example: if nav_doc_base_href is 'item/' and href_raw is 'xhtml/p-001.xhtml',
-                    # resolved should be 'item/xhtml/p-001.xhtml'
-                    href_resolved = urllib.parse.urljoin(nav_doc_base_href, href_raw)
-                    normalized_href = urllib.parse.unquote(href_resolved).split('#')[0]
-                    # Normalize path for consistency (e.g. remove './', '../', convert '\' to '/')
-                    # The key is to match how spine items are normalized later.
-                    # A common approach is to make it relative to the EPUB root.
-                    # For `item/xhtml/p-001.xhtml`, it should remain as such if 'item' is a root-level dir in OPF manifest.
-                    # If `extract_image_data` uses `item/` as a base, this should align.
-                    # Let's assume paths in nav are relative to EPUB root or a known base like 'item/'
-                    # The `Path(normalized_href).as_posix()` can help standardize.
-                    # And then ensure it matches the format used in `process_content` for `item_href_normalized`
-                    normalized_href = str(Path(normalized_href).as_posix()).lstrip('./')
-                    # If the EPUB structure has a common base like 'item/', ensure it's part of normalized_href
-                    # This needs to be consistent with how spine hrefs are processed.
-                    # For now, we assume the resolved href is already correct relative to the EPUB root or a common base.
-
-                    if normalized_href:
-                        link_text = ' '.join(link.stripped_strings) or f"Liên kết không tên {len(self.chapters) + 1}"
-                        self.chapters.append((normalized_href, link_text))
-                        self.logger.debug(f"Thêm chương (từ {specific_nav_file_name}): '{link_text}' -> '{normalized_href}' (Raw: '{href_raw}', Resolved: '{href_resolved}')")
-                    else:
-                        self.logger.warning(f"Bỏ qua liên kết nav với href trống sau khi chuẩn hóa: {href_raw}")
+                self.logger.info(f"Found EPUB3 TOC nav in {nav_item.get_name()}")
+                self._extract_links_from_nav(nav_toc, nav_doc_base_href, "EPUB3 nav")
             else:
-                self.logger.warning(f"Không tìm thấy <nav epub:type='toc'> trong {nav_item.get_name()}. Kiểm tra cấu trúc file.")
-        except Exception as e:
-            self.logger.error(f"Lỗi khi phân tích nội dung tài liệu điều hướng {nav_item.get_name()}: {str(e)}", exc_info=True)
+                # Method 2: Look for standard HTML TOC structures
+                # Try finding by common TOC patterns
+                toc_candidates = [
+                    soup.find('div', id='toc'),
+                    soup.find('div', class_='toc'),
+                    soup.find('nav', id='landmarks'),
+                    soup.find('ol'),  # Simple ordered list
+                    soup.find('ul')   # Simple unordered list
+                ]
+                
+                toc_found = False
+                for candidate in toc_candidates:
+                    if candidate and candidate.find_all('a', href=True):
+                        self.logger.info(f"Found TOC structure: {candidate.name} with id/class '{candidate.get('id', candidate.get('class', 'unknown'))}'")
+                        self._extract_links_from_nav(candidate, nav_doc_base_href, f"{candidate.name} TOC")
+                        toc_found = True
+                        break
+                
+                if not toc_found:
+                    # Method 3: Extract all links as potential chapters
+                    all_links = soup.find_all('a', href=True)
+                    if all_links:
+                        self.logger.warning(f"No structured TOC found. Extracting all {len(all_links)} links as potential chapters.")
+                        self._extract_links_from_nav(soup, nav_doc_base_href, "all links fallback")
+                    else:
+                        self.logger.error("No links found in navigation document.")
 
-        self.logger.info(f"Trích xuất được {len(self.chapters)} chương từ '{specific_nav_file_name}'.")
+        except Exception as e:
+            self.logger.error(f"Error processing navigation document {nav_item.get_name()}: {str(e)}", exc_info=True)
+
+        self.logger.info(f"Extracted {len(self.chapters)} chapters from navigation document.")
+
+    def _extract_links_from_nav(self, nav_element, nav_doc_base_href: str, source_description: str):
+        """Helper method to extract chapter links from a navigation element"""
+        for link in nav_element.find_all('a', href=True):
+            href_raw = link['href']
+            if not href_raw or href_raw.startswith('#'):
+                self.logger.debug(f"Skipping link with empty href or fragment-only: {href_raw}")
+                continue
+
+            # Resolve href relative to navigation document
+            href_resolved = urllib.parse.urljoin(nav_doc_base_href, href_raw)
+            normalized_href = urllib.parse.unquote(href_resolved).split('#')[0]
+            normalized_href = str(Path(normalized_href).as_posix()).lstrip('./')
+            
+            # Handle different EPUB structures
+            # For EPUB/Text/ structure, ensure paths are normalized correctly
+            if 'Text/' in normalized_href and not normalized_href.startswith('Text/'):
+                # Extract just the filename part for Text/ structure
+                filename = Path(normalized_href).name
+                normalized_href = f"Text/{filename}"
+            
+            if normalized_href:
+                link_text = ' '.join(link.stripped_strings) or f"Chapter {len(self.chapters) + 1}"
+                
+                # Clean up common TOC formatting
+                link_text = link_text.replace('\n', ' ').replace('\r', ' ')
+                link_text = ' '.join(link_text.split())  # Normalize whitespace
+                
+                self.chapters.append((normalized_href, link_text))
+                self.logger.debug(f"Added chapter from {source_description}: '{link_text}' -> '{normalized_href}' (Raw: '{href_raw}')")
+            else:
+                self.logger.warning(f"Skipping link with empty normalized href: {href_raw}")
 
 
     def process_content(self):
@@ -576,12 +646,32 @@ class EPUBProcessor:
                 item_href_raw = item.get_name()
                 item_href_normalized = urllib.parse.unquote(item_href_raw).split('#')[0]
                 item_href_normalized = str(Path(item_href_normalized)).replace('\\', '/').lstrip('./').lstrip('../')
+                
                 if item_href_normalized in processed_hrefs:
                     self.logger.debug(f"Skipping already processed item: {item_href_normalized} (Raw: {item_href_raw})")
                     continue
+                    
                 self.logger.info(f"Processing spine item: {item_href_normalized} (Raw: {item_href_raw}, ID: {item_identifier})")
-                if item_href_normalized in chapter_href_map:
-                    chapter_title = chapter_href_map[item_href_normalized]
+                
+                # Enhanced chapter matching - try multiple path variations
+                chapter_title = None
+                for chapter_href, title in self.chapters:
+                    # Direct match
+                    if item_href_normalized == chapter_href:
+                        chapter_title = title
+                        break
+                    # Try matching just the filename (for different folder structures)
+                    elif Path(item_href_normalized).name == Path(chapter_href).name:
+                        chapter_title = title
+                        self.logger.debug(f"Chapter matched by filename: {Path(item_href_normalized).name}")
+                        break
+                    # Try matching without leading path components
+                    elif item_href_normalized.endswith(chapter_href) or chapter_href.endswith(item_href_normalized):
+                        chapter_title = title
+                        self.logger.debug(f"Chapter matched by path suffix: {chapter_href} <-> {item_href_normalized}")
+                        break
+                
+                if chapter_title:
                     self.logger.info(f"Chapter start detected: '{chapter_title}' for item {item_href_normalized}")
                     self.content_processor.structured_content.append({
                         "type": "chapter_start",
@@ -745,6 +835,28 @@ class EPUBProcessor:
         except Exception as e:
             self.logger.error(f"Lỗi không xác định trong quá trình xử lý EPUB: {str(e)}", exc_info=True)
             return False
+
+# Alias for compatibility with app.py
+class EbookProcessor:
+    """Compatibility wrapper for Streamlit app"""
+    
+    def __init__(self, epub_path: str, output_dir: str):
+        config = ExtractorConfig(
+            output_dir=output_dir,
+            image_dir="images",
+            xml_filename="lightnovel_content.xml"
+        )
+        self.processor = EPUBProcessor(epub_path, config)
+    
+    def run(self):
+        """Run the EPUB processing and return detailed results"""
+        success = self.processor.process()
+        result = {
+            'success': success,
+            'chapters_found': len(self.processor.chapters) if hasattr(self.processor, 'chapters') else 0,
+            'has_navigation': hasattr(self.processor, 'chapters') and len(self.processor.chapters) > 0
+        }
+        return result
 
 def main():
     """Ví dụ sử dụng"""

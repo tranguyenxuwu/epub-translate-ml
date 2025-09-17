@@ -1,441 +1,813 @@
-import streamlit as st
-import os
-from pathlib import Path
-import logging
+import io
 import json
+import os
+import queue
+import threading
+from contextlib import redirect_stderr, redirect_stdout
+from pathlib import Path
+import tkinter as tk
+from tkinter import filedialog, messagebox, ttk
+from tkinter.scrolledtext import ScrolledText
+from typing import Dict, Optional
 
-# Import the main functions from your scripts
-# Note: We will need to refactor the original scripts to make these functions available.
-from epub_to_xml import EbookProcessor # Assuming EbookProcessor class encapsulates the logic
-from translate_xml import XMLTranslator, stop_flag
+from PIL import Image, ImageTk
+
+import translate_xml
+from epub_to_xml import EbookProcessor
+from translate_xml import PROMPT_TEMPLATE, XMLTranslator
 from xml_to_epub import create_epub_from_xml
 
-# Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
 
-st.set_page_config(
-    page_title="EPUB Translator", 
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+class QueueStream(io.TextIOBase):
+    """A stream-like object that pushes written text to a queue."""
 
-def detect_previous_translations(output_dir):
-    """Detect and return information about previous translation progress"""
-    progress_files = list(output_dir.glob("*progress.json"))
-    xml_files = list(output_dir.glob("*_translated.xml"))
-    
-    detection_info = {
-        'has_progress': len(progress_files) > 0,
-        'has_translated_xml': len(xml_files) > 0,
-        'progress_files': progress_files,
-        'translated_xml_files': xml_files,
-        'completion_percentage': 0,
-        'translated_count': 0,
-        'total_count': 0
-    }
-    
-    if progress_files:
+    def __init__(self, output_queue: queue.Queue[str]):
+        super().__init__()
+        self.output_queue = output_queue
+
+    def write(self, data: str) -> int:  # type: ignore[override]
+        if not data:
+            return 0
+        self.output_queue.put(data)
+        return len(data)
+
+    def flush(self) -> None:  # type: ignore[override]
+        return None
+
+
+class EpubTranslatorApp:
+    def __init__(self, root: tk.Tk) -> None:
+        self.root = root
+        self.root.title("EPUB Translator")
+        self.root.geometry("1200x820")
+
+        self.output_dir = Path("output")
+        self.output_dir.mkdir(exist_ok=True)
+        (self.output_dir / "images").mkdir(exist_ok=True)
+
+        # --- Application state ---
+        self.epub_path_var = tk.StringVar()
+        self.xml_path: Optional[Path] = None
+        self.translated_xml_path: Optional[Path] = None
+        self.progress_file: Optional[Path] = None
+
+        self.api_key_var = tk.StringVar(value=os.getenv("API_KEY", ""))
+        self.model_options = [
+            "deepseek/deepseek-r1-0528:free",
+            "deepseek/deepseek-r1:free",
+            "custom",
+        ]
+        self.model_var = tk.StringVar(value=self.model_options[0])
+        self.custom_model_var = tk.StringVar()
+        self.batch_size_var = tk.IntVar(value=70)
+
+        self.translation_running = False
+        self.active_translator: Optional[XMLTranslator] = None
+        self.translation_thread: Optional[threading.Thread] = None
+        self.log_queue: queue.Queue[str] = queue.Queue()
+
+        self.progress_summary_var = tk.StringVar(value="No translation progress yet.")
+        self.status_var = tk.StringVar(value="Ready.")
+
+        self.final_epub_name_var = tk.StringVar(value="translated_output.epub")
+
+        # Preview data containers
+        self.preview_data: Dict[str, Dict] = {}
+        self.preview_images: Dict[str, ImageTk.PhotoImage] = {}
+
+        self._build_ui()
+        self.refresh_file_state()
+        self.root.after(200, self._process_log_queue)
+
+    # ------------------------------------------------------------------
+    # UI construction
+    # ------------------------------------------------------------------
+    def _build_ui(self) -> None:
+        style = ttk.Style()
+        style.configure("TLabel", font=("Segoe UI", 10))
+        style.configure("TButton", font=("Segoe UI", 10))
+
+        notebook = ttk.Notebook(self.root)
+        notebook.pack(fill=tk.BOTH, expand=True, padx=12, pady=12)
+
+        workflow_frame = ttk.Frame(notebook)
+        preview_frame = ttk.Frame(notebook)
+        notebook.add(workflow_frame, text="Workflow")
+        notebook.add(preview_frame, text="Preview")
+
+        self._build_workflow_tab(workflow_frame)
+        self._build_preview_tab(preview_frame)
+
+        status_frame = ttk.Frame(self.root)
+        status_frame.pack(fill=tk.X, padx=12, pady=(0, 12))
+        ttk.Label(status_frame, textvariable=self.status_var).pack(side=tk.LEFT)
+
+    def _build_workflow_tab(self, parent: tk.Widget) -> None:
+        # Step 1 - Conversion
+        step1 = ttk.LabelFrame(parent, text="Step 1 · Convert EPUB to XML")
+        step1.pack(fill=tk.X, padx=8, pady=6)
+
+        path_frame = ttk.Frame(step1)
+        path_frame.pack(fill=tk.X, padx=8, pady=6)
+        ttk.Label(path_frame, text="EPUB file:").pack(side=tk.LEFT)
+        entry = ttk.Entry(path_frame, textvariable=self.epub_path_var)
+        entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=6)
+        ttk.Button(path_frame, text="Browse…", command=self._choose_epub).pack(side=tk.LEFT)
+
+        ttk.Button(
+            step1,
+            text="Convert to XML",
+            command=self.start_conversion,
+        ).pack(padx=8, pady=(0, 8), anchor=tk.W)
+
+        # Step 2 - Translation settings
+        step2 = ttk.LabelFrame(parent, text="Step 2 · Translate XML Content")
+        step2.pack(fill=tk.BOTH, padx=8, pady=6)
+
+        api_frame = ttk.Frame(step2)
+        api_frame.pack(fill=tk.X, padx=8, pady=(8, 4))
+        ttk.Label(api_frame, text="API key:").pack(side=tk.LEFT)
+        api_entry = ttk.Entry(api_frame, textvariable=self.api_key_var, show="*")
+        api_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=6)
+        ttk.Button(api_frame, text="Save", command=self._save_api_key).pack(side=tk.LEFT)
+
+        options_frame = ttk.Frame(step2)
+        options_frame.pack(fill=tk.X, padx=8, pady=4)
+        ttk.Label(options_frame, text="Model:").grid(row=0, column=0, sticky=tk.W)
+        model_combo = ttk.Combobox(
+            options_frame,
+            textvariable=self.model_var,
+            values=self.model_options,
+            state="readonly",
+        )
+        model_combo.grid(row=0, column=1, sticky=tk.W, padx=6)
+        model_combo.bind("<<ComboboxSelected>>", lambda _: self._toggle_custom_model())
+
+        ttk.Label(options_frame, text="Custom model:").grid(row=0, column=2, sticky=tk.W, padx=(16, 0))
+        self.custom_model_entry = ttk.Entry(options_frame, textvariable=self.custom_model_var, width=32)
+        self.custom_model_entry.grid(row=0, column=3, sticky=tk.W, padx=6)
+
+        ttk.Label(options_frame, text="Batch size:").grid(row=0, column=4, sticky=tk.W, padx=(16, 0))
+        batch_spin = ttk.Spinbox(options_frame, from_=10, to=200, increment=10, textvariable=self.batch_size_var, width=6)
+        batch_spin.grid(row=0, column=5, sticky=tk.W, padx=6)
+
+        self._toggle_custom_model()
+
+        prompt_frame = ttk.LabelFrame(step2, text="Translation prompt")
+        prompt_frame.pack(fill=tk.BOTH, padx=8, pady=6, expand=True)
+
+        self.prompt_text = ScrolledText(prompt_frame, height=14, wrap=tk.WORD)
+        self.prompt_text.pack(fill=tk.BOTH, expand=True, padx=6, pady=6)
+        self.prompt_text.insert("1.0", PROMPT_TEMPLATE)
+
+        templates_frame = ttk.Frame(prompt_frame)
+        templates_frame.pack(anchor=tk.W, padx=6, pady=(0, 6))
+        ttk.Label(templates_frame, text="Quick templates:").pack(side=tk.LEFT)
+        ttk.Button(
+            templates_frame,
+            text="Light novel",
+            command=lambda: self._apply_prompt_template(PROMPT_TEMPLATE),
+        ).pack(side=tk.LEFT, padx=4)
+        ttk.Button(
+            templates_frame,
+            text="General",
+            command=lambda: self._apply_prompt_template(self._general_prompt_template()),
+        ).pack(side=tk.LEFT, padx=4)
+        ttk.Button(
+            templates_frame,
+            text="Formal",
+            command=lambda: self._apply_prompt_template(self._formal_prompt_template()),
+        ).pack(side=tk.LEFT, padx=4)
+
+        actions_frame = ttk.Frame(step2)
+        actions_frame.pack(fill=tk.X, padx=8, pady=6)
+        ttk.Button(actions_frame, text="Start translation", command=self.start_translation).pack(side=tk.LEFT)
+        self.stop_button = ttk.Button(actions_frame, text="Stop", command=self.stop_translation, state=tk.DISABLED)
+        self.stop_button.pack(side=tk.LEFT, padx=6)
+
+        progress_frame = ttk.Frame(step2)
+        progress_frame.pack(fill=tk.X, padx=8, pady=(0, 8))
+        self.progress_bar = ttk.Progressbar(progress_frame, orient=tk.HORIZONTAL, length=280, mode="determinate")
+        self.progress_bar.pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Label(progress_frame, textvariable=self.progress_summary_var).pack(side=tk.LEFT)
+
+        # Step 3 - Final EPUB
+        step3 = ttk.LabelFrame(parent, text="Step 3 · Create final EPUB")
+        step3.pack(fill=tk.X, padx=8, pady=6)
+
+        info_frame = ttk.Frame(step3)
+        info_frame.pack(fill=tk.X, padx=8, pady=6)
+        ttk.Label(info_frame, text="Output EPUB name:").pack(side=tk.LEFT)
+        ttk.Entry(info_frame, textvariable=self.final_epub_name_var, width=40).pack(side=tk.LEFT, padx=6)
+        ttk.Button(step3, text="Create EPUB", command=self.create_epub).pack(padx=8, pady=(0, 8), anchor=tk.W)
+
+        # Log view
+        log_frame = ttk.LabelFrame(parent, text="Activity log")
+        log_frame.pack(fill=tk.BOTH, padx=8, pady=(6, 8), expand=True)
+
+        self.log_text = ScrolledText(log_frame, height=12, wrap=tk.WORD, state=tk.DISABLED)
+        self.log_text.pack(fill=tk.BOTH, expand=True, padx=6, pady=6)
+
+    def _build_preview_tab(self, parent: tk.Widget) -> None:
+        controls = ttk.Frame(parent)
+        controls.pack(fill=tk.X, padx=8, pady=6)
+        ttk.Button(controls, text="Load latest data", command=self.load_preview_data).pack(side=tk.LEFT)
+        ttk.Button(controls, text="Refresh", command=self.refresh_file_state).pack(side=tk.LEFT, padx=6)
+
+        paned = ttk.Panedwindow(parent, orient=tk.HORIZONTAL)
+        paned.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 8))
+
+        left_frame = ttk.Frame(paned)
+        right_frame = ttk.Frame(paned)
+        paned.add(left_frame, weight=1)
+        paned.add(right_frame, weight=2)
+
+        tree_scroll = ttk.Scrollbar(left_frame)
+        tree_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        self.preview_tree = ttk.Treeview(
+            left_frame,
+            columns=("Type", "Status"),
+            show="tree headings",
+            yscrollcommand=tree_scroll.set,
+        )
+        self.preview_tree.heading("#0", text="Content")
+        self.preview_tree.heading("Type", text="Type")
+        self.preview_tree.heading("Status", text="Status")
+        self.preview_tree.column("#0", width=280)
+        self.preview_tree.column("Type", width=100, anchor=tk.CENTER)
+        self.preview_tree.column("Status", width=120, anchor=tk.CENTER)
+        self.preview_tree.pack(fill=tk.BOTH, expand=True)
+        tree_scroll.config(command=self.preview_tree.yview)
+        self.preview_tree.bind("<<TreeviewSelect>>", self._on_preview_select)
+
+        detail_notebook = ttk.Notebook(right_frame)
+        detail_notebook.pack(fill=tk.BOTH, expand=True)
+
+        text_frame = ttk.Frame(detail_notebook)
+        image_frame = ttk.Frame(detail_notebook)
+        detail_notebook.add(text_frame, text="Text details")
+        detail_notebook.add(image_frame, text="Image preview")
+
+        self.preview_title_var = tk.StringVar(value="Select an item to preview.")
+        ttk.Label(text_frame, textvariable=self.preview_title_var, font=("Segoe UI", 11, "bold")).pack(
+            anchor=tk.W, padx=8, pady=(8, 0)
+        )
+
+        text_split = ttk.Panedwindow(text_frame, orient=tk.VERTICAL)
+        text_split.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
+
+        original_frame = ttk.LabelFrame(text_split, text="Original")
+        translated_frame = ttk.LabelFrame(text_split, text="Translated")
+        text_split.add(original_frame, weight=1)
+        text_split.add(translated_frame, weight=1)
+
+        self.preview_original_text = ScrolledText(original_frame, wrap=tk.WORD, height=12)
+        self.preview_original_text.pack(fill=tk.BOTH, expand=True, padx=6, pady=6)
+        self.preview_translated_text = ScrolledText(translated_frame, wrap=tk.WORD, height=12)
+        self.preview_translated_text.pack(fill=tk.BOTH, expand=True, padx=6, pady=6)
+
+        for widget in (self.preview_original_text, self.preview_translated_text):
+            widget.configure(state=tk.DISABLED)
+
+        image_frame_inner = ttk.Frame(image_frame)
+        image_frame_inner.pack(fill=tk.BOTH, expand=True)
+        self.preview_image_label = ttk.Label(image_frame_inner, text="No image selected.")
+        self.preview_image_label.pack(padx=8, pady=8)
+
+    # ------------------------------------------------------------------
+    # Utility helpers
+    # ------------------------------------------------------------------
+    def _choose_epub(self) -> None:
+        file_path = filedialog.askopenfilename(filetypes=[("EPUB files", "*.epub")])
+        if file_path:
+            self.epub_path_var.set(file_path)
+
+    def _apply_prompt_template(self, template: str) -> None:
+        self.prompt_text.delete("1.0", tk.END)
+        self.prompt_text.insert("1.0", template)
+
+    @staticmethod
+    def _general_prompt_template() -> str:
+        return (
+            "Translate the following text into Vietnamese. Follow these instructions:\n"
+            "1. Maintain the original meaning and tone\n"
+            "2. Use natural, fluent Vietnamese\n"
+            "3. Preserve formatting and structure\n"
+            "4. Each input is in format id: text_to_translate\n"
+            "5. Return as id: translated_text\n\n"
+            "Content to translate:\n{content}"
+        )
+
+    @staticmethod
+    def _formal_prompt_template() -> str:
+        return (
+            "Translate the following text into formal Vietnamese suitable for academic or professional contexts."
+            " Follow these instructions:\n"
+            "1. Use formal, polished language\n"
+            "2. Maintain technical terminology accuracy\n"
+            "3. Preserve original structure and meaning\n"
+            "4. Each input is in format id: text_to_translate\n"
+            "5. Return as id: translated_text\n\n"
+            "Content to translate:\n{content}"
+        )
+
+    def _toggle_custom_model(self) -> None:
+        if self.model_var.get() == "custom":
+            self.custom_model_entry.configure(state=tk.NORMAL)
+        else:
+            self.custom_model_entry.configure(state=tk.DISABLED)
+
+    def _save_api_key(self) -> None:
+        api_key = self.api_key_var.get().strip()
+        if not api_key:
+            messagebox.showwarning("API key", "Please enter a valid API key.")
+            return
+        os.environ["API_KEY"] = api_key
+        self.append_log("API key saved to environment for current session.\n")
+        messagebox.showinfo("API key", "API key saved for the current session.")
+
+    def append_log(self, message: str) -> None:
+        self.log_text.configure(state=tk.NORMAL)
+        self.log_text.insert(tk.END, message)
+        self.log_text.see(tk.END)
+        self.log_text.configure(state=tk.DISABLED)
+
+    def _process_log_queue(self) -> None:
+        while not self.log_queue.empty():
+            message = self.log_queue.get()
+            self.append_log(message)
+        self.root.after(200, self._process_log_queue)
+
+    def refresh_file_state(self) -> None:
+        xml_candidates = [p for p in self.output_dir.glob("*.xml") if not p.name.endswith("_translated.xml")]
+        self.xml_path = xml_candidates[0] if xml_candidates else None
+
+        translated_candidates = list(self.output_dir.glob("*_translated.xml"))
+        self.translated_xml_path = translated_candidates[0] if translated_candidates else None
+
+        progress_candidates = list(self.output_dir.glob("*progress.json"))
+        self.progress_file = progress_candidates[0] if progress_candidates else None
+
+        if self.translated_xml_path:
+            self.final_epub_name_var.set(f"{self.translated_xml_path.stem}.epub")
+
+        if self.xml_path:
+            self.append_log(f"XML file detected: {self.xml_path.name}\n")
+        if self.translated_xml_path:
+            self.append_log(f"Translated XML detected: {self.translated_xml_path.name}\n")
+
+        self.update_progress_summary()
+
+    def detect_previous_translations(self) -> Dict[str, object]:
+        info: Dict[str, object] = {
+            "has_progress": False,
+            "has_translated_xml": False,
+            "translated_count": 0,
+            "total_count": 0,
+            "completion_percentage": 0.0,
+        }
+
+        if self.progress_file and self.progress_file.exists():
+            try:
+                with open(self.progress_file, "r", encoding="utf-8") as f:
+                    progress_data = json.load(f)
+                info["has_progress"] = True
+                info["translated_count"] = len(progress_data)
+            except Exception as exc:  # pragma: no cover - defensive
+                self.append_log(f"Failed to read progress file: {exc}\n")
+
+        if self.xml_path and self.xml_path.exists():
+            try:
+                import xml.etree.ElementTree as ET
+
+                tree = ET.parse(self.xml_path)
+                root = tree.getroot()
+                total_elements = 0
+
+                for chapter in root.findall(".//chapter"):
+                    if chapter.get("title"):
+                        total_elements += 1
+                    for elem in chapter:
+                        if elem.tag == "paragraph" and elem.get("translate") == "yes":
+                            total_elements += 1
+
+                info["total_count"] = total_elements
+                translated_count = info["translated_count"]  # type: ignore[assignment]
+                if total_elements > 0:
+                    percentage = (translated_count / total_elements) * 100
+                    info["completion_percentage"] = percentage
+            except Exception as exc:  # pragma: no cover - defensive
+                self.append_log(f"Could not compute total elements: {exc}\n")
+
+        if self.translated_xml_path and self.translated_xml_path.exists():
+            info["has_translated_xml"] = True
+
+        return info
+
+    def update_progress_summary(self) -> None:
+        info = self.detect_previous_translations()
+        translated = info.get("translated_count", 0)
+        total = info.get("total_count", 0)
+        percentage = info.get("completion_percentage", 0.0)
+        self.progress_bar["value"] = percentage
+        if total:
+            summary = f"Progress: {int(translated)}/{int(total)} elements ({percentage:.1f}%)"
+        elif translated:
+            summary = f"Translated elements: {int(translated)}"
+        else:
+            summary = "No translation progress yet."
+        self.progress_summary_var.set(summary)
+
+    # ------------------------------------------------------------------
+    # EPUB conversion
+    # ------------------------------------------------------------------
+    def start_conversion(self) -> None:
+        if self.translation_running:
+            messagebox.showinfo("Conversion", "Translation is currently running. Please stop it before converting.")
+            return
+
+        epub_path = self.epub_path_var.get().strip()
+        if not epub_path:
+            messagebox.showwarning("Conversion", "Please choose an EPUB file to convert.")
+            return
+
+        if not Path(epub_path).exists():
+            messagebox.showerror("Conversion", "The selected EPUB file does not exist.")
+            return
+
+        self.status_var.set("Converting EPUB…")
+        self.append_log("Starting EPUB to XML conversion…\n")
+
+        def worker() -> None:
+            success = False
+            error: Optional[str] = None
+            try:
+                processor = EbookProcessor(epub_path, str(self.output_dir))
+                result = processor.run()
+                if isinstance(result, dict):
+                    success = bool(result.get("success"))
+                else:
+                    success = bool(result)
+            except Exception as exc:
+                error = str(exc)
+            finally:
+                self.root.after(0, lambda: self._on_conversion_finished(success, error))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_conversion_finished(self, success: bool, error: Optional[str]) -> None:
+        if success:
+            self.append_log("EPUB converted successfully.\n")
+        else:
+            self.append_log("EPUB conversion failed.\n")
+        if error:
+            messagebox.showerror("Conversion", f"An error occurred during conversion:\n{error}")
+        elif success:
+            messagebox.showinfo("Conversion", "EPUB converted to XML successfully.")
+        self.status_var.set("Ready.")
+        self.refresh_file_state()
+
+    # ------------------------------------------------------------------
+    # Translation handling
+    # ------------------------------------------------------------------
+    def start_translation(self) -> None:
+        if self.translation_running:
+            messagebox.showinfo("Translation", "A translation is already in progress.")
+            return
+
+        if not self.xml_path or not self.xml_path.exists():
+            messagebox.showwarning("Translation", "No XML file found. Please convert an EPUB first.")
+            return
+
+        api_key = self.api_key_var.get().strip()
+        if not api_key:
+            messagebox.showwarning("Translation", "Please provide an API key before starting the translation.")
+            return
+
+        os.environ["API_KEY"] = api_key
+
         try:
-            with open(progress_files[0], 'r', encoding='utf-8') as f:
-                progress_data = json.load(f)
-                detection_info['translated_count'] = len(progress_data)
-                
-                # Try to get total count from original XML
-                xml_files_for_total = list(output_dir.glob("*.xml"))
-                xml_files_for_total = [f for f in xml_files_for_total if not f.name.endswith('_translated.xml')]
-                
-                if xml_files_for_total:
-                    import xml.etree.ElementTree as ET
-                    try:
-                        tree = ET.parse(xml_files_for_total[0])
-                        root = tree.getroot()
-                        
-                        total_elements = 0
-                        for chapter in root.findall('.//chapter'):
-                            if chapter.get('title'):
-                                total_elements += 1  # Chapter title
-                            for elem in chapter:
-                                if elem.tag == 'paragraph' and elem.get('translate') == 'yes':
-                                    total_elements += 1
-                        
-                        detection_info['total_count'] = total_elements
-                        if total_elements > 0:
-                            detection_info['completion_percentage'] = (detection_info['translated_count'] / total_elements) * 100
-                    except Exception as e:
-                        logger.warning(f"Could not determine total element count: {e}")
-        except Exception as e:
-            logger.warning(f"Could not read progress file: {e}")
-    
-    return detection_info
+            translator = XMLTranslator(str(self.xml_path))
+        except ValueError as exc:
+            messagebox.showerror("Translation", str(exc))
+            return
+        except Exception as exc:  # pragma: no cover - defensive
+            messagebox.showerror("Translation", f"Failed to initialise translator: {exc}")
+            return
 
-def main():
-    # Add navigation
-    st.sidebar.title("📚 EPUB Translator")
-    
-    # Create navigation
-    page = st.sidebar.selectbox(
-        "Navigate to:",
-        ["🏠 Main Workflow", "📖 Translation Preview"],
-        index=0
-    )
-    
-    if page == "📖 Translation Preview":
-        # Redirect to preview functionality
+        prompt = self.prompt_text.get("1.0", tk.END).strip()
+        if prompt:
+            translator.set_custom_prompt(prompt)
+
+        model_choice = self.model_var.get()
+        if model_choice == "custom":
+            custom_model = self.custom_model_var.get().strip()
+            if not custom_model:
+                messagebox.showwarning("Translation", "Please enter a custom model name.")
+                return
+            translator.set_model(custom_model)
+        else:
+            translator.set_model(model_choice)
+
         try:
-            import st_preview_content
-            st_preview_content.main()
-        except ImportError:
-            st.error("Preview module not found. Please ensure st_preview_content.py is available.")
-        except Exception as e:
-            st.error(f"Error loading preview: {e}")
-        return
-    
-    # Main workflow page
-    st.title("EPUB to Translated EPUB Workflow")
+            batch_size = int(self.batch_size_var.get())
+            translator.set_batch_size(batch_size)
+        except ValueError:
+            messagebox.showwarning("Translation", "Invalid batch size. Please enter a number.")
+            return
 
-    # --- Setup Directories ---
-    output_dir = Path("output")
-    output_dir.mkdir(exist_ok=True)
-    image_dir = output_dir / "images"
-    image_dir.mkdir(exist_ok=True)
+        self.translation_running = True
+        self.active_translator = translator
+        translate_xml.stop_flag = False
+        self.status_var.set("Translating…")
+        self.append_log("Starting translation…\n")
+        self.stop_button.configure(state=tk.NORMAL)
 
-    # --- Step 1: Upload EPUB and Convert to XML ---
-    st.header("Step 1: Upload EPUB and Convert to XML")
-    uploaded_file = st.file_uploader("Choose an EPUB file", type="epub")
+        def worker() -> None:
+            success = False
+            error: Optional[str] = None
+            stream = QueueStream(self.log_queue)
+            try:
+                with redirect_stdout(stream), redirect_stderr(stream):
+                    translator.run()
+                info = translator.get_progress_info()
+                success = info.get("completion_percentage", 0) >= 99.9
+            except Exception as exc:  # pragma: no cover - defensive
+                error = str(exc)
+            finally:
+                self.root.after(0, lambda: self._on_translation_finished(success, error))
 
-    if uploaded_file is not None:
-        epub_path = output_dir / uploaded_file.name
-        xml_path = output_dir / f"{epub_path.stem}.xml"
+        self.translation_thread = threading.Thread(target=worker, daemon=True)
+        self.translation_thread.start()
+        self.root.after(1000, self._poll_translation_progress)
 
-        # Save uploaded file to disk
-        with open(epub_path, "wb") as f:
-            f.write(uploaded_file.getbuffer())
-        st.info(f"Saved EPUB to {epub_path}")
-
-        if st.button("Convert EPUB to XML", key="convert_epub_btn"):
-            with st.spinner("Processing EPUB... This may take a moment."):
-                try:
-                    # This assumes epub_to_xml.py is refactored into a class or function
-                    processor = EbookProcessor(str(epub_path), str(output_dir))
-                    result = processor.run()
-                    
-                    if isinstance(result, dict):
-                        # New detailed result format
-                        if result['success']:
-                            st.success(f"Successfully converted EPUB to XML: {xml_path}")
-                            
-                            # Check for navigation/TOC warnings
-                            if not result['has_navigation'] or result['chapters_found'] == 0:
-                                st.warning("⚠️ **No navigation or table of contents found in the EPUB file.** "
-                                          "The conversion proceeded, but the structure may not be optimal. "
-                                          "This can happen with EPUBs that lack proper navigation documents "
-                                          "(TableOfContents.xhtml, navigation-documents.xhtml, etc.). "
-                                          "The translation will still work, but chapter organization may be affected.")
-                            else:
-                                st.info(f"✅ Found {result['chapters_found']} chapters in the navigation structure.")
-                        else:
-                            st.error("Failed to convert EPUB to XML. Check the logs for details.")
-                    else:
-                        # Legacy boolean result format (backward compatibility)
-                        if result:
-                            st.success(f"Successfully converted EPUB to XML: {xml_path}")
-                        else:
-                            st.error("Failed to convert EPUB to XML. Check the logs for details.")
-                except Exception as e:
-                    st.error(f"An error occurred during XML conversion: {e}")
-
-    # --- Step 2: Translate the XML file ---
-    st.header("Step 2: Translate XML Content")
-    
-    # Check for API key
-    api_key = os.getenv("API_KEY")
-    if not api_key:
-        st.warning("⚠️ API_KEY not found in environment variables. Please set your API key to proceed with translation.")
-        api_key_input = st.text_input("Enter your API Key:", type="password")
-        if api_key_input:
-            os.environ["API_KEY"] = api_key_input
-            st.success("API Key set successfully!")
-    
-    # We need to find the generated XML file to proceed
-    xml_files = list(output_dir.glob("*.xml"))
-    if not xml_files:
-        st.warning("No XML file found. Please complete Step 1.")
-    else:
-        # For simplicity, we'll just use the first XML file found.
-        # A more robust app might let the user choose.
-        xml_to_translate = xml_files[0]
-        translated_xml_path = output_dir / f"{xml_to_translate.stem}_translated.xml"
-
-        st.info(f"Ready to translate: {xml_to_translate.name}")
-        
-        # Custom prompt editing section
-        st.subheader("Translation Settings")
-        
-        # Model selection
-        col1, col2 = st.columns(2)
-        with col1:
-            model_options = [
-                "deepseek/deepseek-r1-0528:free",
-                "deepseek/deepseek-r1:free",
-                "custom"
-            ]
-            
-            # Get current model from session state or use default
-            current_model = getattr(st.session_state, 'selected_model', model_options[0])
-            default_index = 0
-            if current_model in model_options:
-                default_index = model_options.index(current_model)
-            
-            selected_model = st.selectbox(
-                "Select Translation Model:",
-                model_options,
-                index=default_index,
-                help="Choose the AI model for translation. Some models may require different API keys."
+    def _poll_translation_progress(self) -> None:
+        if not self.translation_running or not self.active_translator:
+            return
+        try:
+            info = self.active_translator.get_progress_info()
+            percentage = info.get("completion_percentage", 0)
+            translated = info.get("translated_elements", 0)
+            total = info.get("total_elements", 0)
+            self.progress_bar["value"] = percentage
+            self.progress_summary_var.set(
+                f"Progress: {translated}/{total} elements ({percentage:.1f}%)"
             )
-            
-            if selected_model == "custom":
-                custom_model = st.text_input(
-                    "Enter custom model name:",
-                    value=current_model if current_model not in model_options else "",
-                    placeholder="e.g., anthropic/claude-3-opus"
-                )
-                if custom_model:
-                    selected_model = custom_model
-        
-        with col2:
-            # Get current batch size from session state or use default
-            current_batch_size = getattr(st.session_state, 'batch_size', 70)
-            
-            batch_size = st.number_input(
-                "Batch Size:",
-                min_value=10,
-                max_value=200,
-                value=current_batch_size,
-                step=10,
-                help="Number of text elements processed per API call. Smaller batches are more reliable but slower."
+        except Exception as exc:  # pragma: no cover - defensive
+            self.append_log(f"Could not update progress: {exc}\n")
+        finally:
+            if self.translation_running:
+                self.root.after(1500, self._poll_translation_progress)
+
+    def _on_translation_finished(self, success: bool, error: Optional[str]) -> None:
+        self.translation_running = False
+        self.stop_button.configure(state=tk.DISABLED)
+        self.status_var.set("Ready.")
+        self.active_translator = None
+        self.translation_thread = None
+        self.refresh_file_state()
+
+        if error:
+            messagebox.showerror("Translation", f"An error occurred during translation:\n{error}")
+            return
+
+        if translate_xml.stop_flag:
+            messagebox.showinfo(
+                "Translation",
+                "Translation stopped by user. Progress has been saved and can be resumed.",
             )
-        
-        with st.expander("📝 Customize Translation Prompt", expanded=False):
-            # Get the default prompt from translate_xml module
-            from translate_xml import PROMPT_TEMPLATE
-            
-            # Use session state value if available, otherwise use default
-            current_prompt = getattr(st.session_state, 'custom_prompt', PROMPT_TEMPLATE)
-            
-            custom_prompt = st.text_area(
-                "Edit the translation prompt:",
-                value=current_prompt,
-                height=400,
-                help="Modify this prompt to customize how the AI translates your content. The placeholders {context} and {content} will be filled automatically."
+        elif success:
+            messagebox.showinfo("Translation", "Translation completed successfully.")
+        else:
+            messagebox.showinfo(
+                "Translation",
+                "Translation finished with partial progress. You can run it again to continue.",
             )
-            
-            # Quick prompt templates
-            st.write("**Quick Templates:**")
-            template_col1, template_col2, template_col3 = st.columns(3)
-            
-            with template_col1:
-                if st.button("📚 Light Novel (Default)", key="template_light_novel_btn"):
-                    st.session_state.custom_prompt = PROMPT_TEMPLATE
-                    st.rerun()
-            
-            with template_col2:
-                if st.button("📰 General Text", key="template_general_btn"):
-                    general_prompt = """Translate the following text into Vietnamese. Follow these instructions:
-1. Maintain the original meaning and tone
-2. Use natural, fluent Vietnamese
-3. Preserve formatting and structure
-4. Each input is in format id: text_to_translate
-5. Return as id: translated_text
 
-Content to translate:
-{content}"""
-                    st.session_state.custom_prompt = general_prompt
-                    st.rerun()
-            
-            with template_col3:
-                if st.button("🎭 Formal/Academic", key="template_formal_btn"):
-                    formal_prompt = """Translate the following text into formal Vietnamese suitable for academic or professional contexts. Follow these instructions:
-1. Use formal, polished language
-2. Maintain technical terminology accuracy
-3. Preserve original structure and meaning
-4. Each input is in format id: text_to_translate
-5. Return as id: translated_text
+    def stop_translation(self) -> None:
+        if self.translation_running and self.active_translator:
+            self.active_translator.stop_translation()
+            translate_xml.stop_flag = True
+            self.append_log("Stop signal sent. Translation will pause after current batch.\n")
+            self.stop_button.configure(state=tk.DISABLED)
 
-Content to translate:
-{content}"""
-                    st.session_state.custom_prompt = formal_prompt
-                    st.rerun()
-            
-            if st.button("💾 Save Custom Prompt", key="save_prompt_btn"):
-                # Store the custom prompt in session state
-                st.session_state.custom_prompt = custom_prompt
-                st.session_state.selected_model = selected_model
-                st.session_state.batch_size = batch_size
-                st.success("Settings saved!")
-        
-        
-        # Check for previous translations
-        detection_info = detect_previous_translations(output_dir)
-        
-        if detection_info['has_progress']:
-            st.info(f"📋 **Previous translation detected!** "
-                   f"Found {detection_info['translated_count']} translated elements "
-                   f"({detection_info['completion_percentage']:.1f}% complete). "
-                   f"Translation will resume from where it left off.")
-        
-        if st.button("Translate XML", key="translate_xml_btn"):
-            if not os.getenv("API_KEY"):
-                st.error("Please provide an API key before translating.")
-            else:
-                # Initialize session state for translation control
-                if 'translation_running' not in st.session_state:
-                    st.session_state.translation_running = False
-                if 'stop_requested' not in st.session_state:
-                    st.session_state.stop_requested = False
-                
-                # Set running state and reset stop flag
-                st.session_state.translation_running = True
-                st.session_state.stop_requested = False
-                
-                # Reset stop flag in translate_xml module
-                import translate_xml
-                translate_xml.stop_flag = False
-                
-                # Create container for dynamic content
-                translation_container = st.container()
-                
-                with translation_container:
-                    try:
-                        # Create translator instance
-                        translator = XMLTranslator(str(xml_to_translate))
-                        
-                        # Reset any previous interrupt flags
-                        translator.reset_interrupt_flag()
-                        
-                        # Apply custom settings if available
-                        if hasattr(st.session_state, 'custom_prompt') and st.session_state.custom_prompt:
-                            translator.set_custom_prompt(st.session_state.custom_prompt)
-                        
-                        if hasattr(st.session_state, 'selected_model') and st.session_state.selected_model:
-                            translator.set_model(st.session_state.selected_model)
-                        
-                        if hasattr(st.session_state, 'batch_size') and st.session_state.batch_size:
-                            translator.set_batch_size(st.session_state.batch_size)
-                        
-                        # Get initial progress info
-                        progress_info = translator.get_progress_info()
-                        
-                        if progress_info['total_elements'] > 0:
-                            st.info(f"📊 Translation Progress: {progress_info['translated_elements']}/{progress_info['total_elements']} "
-                                   f"({progress_info['completion_percentage']:.1f}% complete)")
-                            
-                            # Create progress bar and status
-                            progress_bar = st.progress(progress_info['completion_percentage'] / 100)
-                            status_text = st.empty()
-                            
-                            status_text.text(f"Starting translation... {progress_info['remaining_elements']} elements remaining")
-                        
-                        # Create a placeholder for the stop button
-                        stop_placeholder = st.empty()
-                        
-                        # Show stop button
-                        with stop_placeholder:
-                            col1, col2 = st.columns([1, 3])
-                            with col1:
-                                if st.button("🛑 Stop Translation", key="stop_translate_btn", help="Stop translation after current batch"):
-                                    st.session_state.stop_requested = True
-                                    translate_xml.stop_flag = True
-                                    translator.stop_translation()
-                                    st.warning("⏸️ Stop signal sent! Translation will finish current batch and save progress...")
-                                    # Hide the stop button and show confirmation
-                                    stop_placeholder.empty()
-                                    st.error("🛑 Translation stopping... Please wait for current batch to complete.")
-                                    st.session_state.translation_running = False
-                                    return  # Exit early
-                        
-                        # Check if stop was requested before starting
-                        if not st.session_state.stop_requested:
-                            # Run translation with progress updates
-                            with st.spinner("Translating content via API... This can take a long time."):
-                                translator.run()
-                        
-                        # Clear the stop button after translation
-                        stop_placeholder.empty()
-                        
-                        # Final progress check
-                        final_progress = translator.get_progress_info()
-                        
-                        if st.session_state.stop_requested or translate_xml.stop_flag:
-                            st.warning(f"⏸️ Translation stopped by user. Progress saved: {final_progress['translated_elements']}/{final_progress['total_elements']} elements completed. You can resume by clicking 'Translate XML' again.")
-                        elif final_progress['completion_percentage'] >= 100:
-                            st.success(f"✅ Translation completed successfully! Translated {final_progress['translated_elements']} elements.")
-                        else:
-                            st.info(f"📊 Translation progress: {final_progress['translated_elements']}/{final_progress['total_elements']} elements completed.")
-                            
-                    except ValueError as e:
-                        st.error(f"Configuration error: {e}")
-                    except Exception as e:
-                        st.error(f"An error occurred during translation: {e}")
-                        import traceback
-                        st.error(f"Detailed error: {traceback.format_exc()}")
-                    finally:
-                        # Reset translation state
-                        st.session_state.translation_running = False
+    # ------------------------------------------------------------------
+    # EPUB creation
+    # ------------------------------------------------------------------
+    def create_epub(self) -> None:
+        if not self.translated_xml_path or not self.translated_xml_path.exists():
+            messagebox.showwarning("Create EPUB", "No translated XML file found. Please complete the translation first.")
+            return
 
-    # --- Step 2.5: Preview Translated Content ---
-    st.header("📖 Translation Preview")
-    
-    # Check for translated content
-    detection_info = detect_previous_translations(output_dir)
-    
-    if detection_info['has_progress']:
-        st.info(f"📚 Translation progress found: {detection_info['translated_count']} elements translated "
-               f"({detection_info['completion_percentage']:.1f}% complete)")
-        
-        # Create navigation to preview
-        st.markdown("### View Translation Preview")
-        st.markdown("*Use the sidebar navigation to switch to 'Translation Preview' to view your translated content.*")
-        
-        # Quick preview statistics
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("Translated Elements", detection_info['translated_count'])
-        with col2:
-            st.metric("Progress", f"{detection_info['completion_percentage']:.1f}%")
-        with col3:
-            if detection_info['total_count'] > 0:
-                st.metric("Total Elements", detection_info['total_count'])
-    else:
-        st.info("No translated content available yet. Complete the translation step to see a preview.")
+        target_name = self.final_epub_name_var.get().strip() or f"{self.translated_xml_path.stem}.epub"
+        try:
+            create_epub_from_xml(
+                str(self.translated_xml_path),
+                target_name,
+                str(self.output_dir),
+            )
+            self.append_log(f"Created EPUB: {target_name}\n")
+            messagebox.showinfo(
+                "Create EPUB",
+                f"EPUB file '{target_name}' created in {self.output_dir.resolve()}",
+            )
+        except Exception as exc:
+            messagebox.showerror("Create EPUB", f"Failed to create EPUB: {exc}")
 
-    # --- Step 3: Convert Translated XML back to EPUB ---
-    st.header("Step 3: Create Final EPUB")
-    translated_xml_files = list(output_dir.glob("*_translated.xml"))
-    if not translated_xml_files:
-        st.warning("No translated XML file found. Please complete Step 2.")
-    else:
-        final_xml = translated_xml_files[0]
-        final_epub_path = output_dir / f"{final_xml.stem}.epub"
+    # ------------------------------------------------------------------
+    # Preview handling
+    # ------------------------------------------------------------------
+    def load_preview_data(self) -> None:
+        if not self.xml_path or not self.xml_path.exists():
+            messagebox.showwarning("Preview", "No XML file found. Please run the conversion first.")
+            return
 
-        st.info(f"Ready to create EPUB from: {final_xml.name}")
-        if st.button("Create Translated EPUB", key="create_epub_btn"):
-            with st.spinner("Assembling final EPUB file..."):
-                try:
-                    # This function is already well-structured in xml_to_epub.py
-                    create_epub_from_xml(str(final_xml), final_epub_path.name, str(output_dir))
-                    st.success(f"Successfully created final EPUB!")
+        import xml.etree.ElementTree as ET
 
-                    # Provide download link
-                    with open(final_epub_path, "rb") as f:
-                        st.download_button(
-                            label="Download Translated EPUB",
-                            data=f,
-                            file_name=final_epub_path.name,
-                            mime="application/epub+zip"
-                        )
-                except Exception as e:
-                    st.error(f"An error occurred during EPUB creation: {e}")
+        try:
+            original_tree = ET.parse(self.xml_path)
+            original_root = original_tree.getroot()
+        except Exception as exc:
+            messagebox.showerror("Preview", f"Failed to load XML file: {exc}")
+            return
+
+        translation_map: Dict[str, str] = {}
+
+        if self.progress_file and self.progress_file.exists():
+            try:
+                with open(self.progress_file, "r", encoding="utf-8") as f:
+                    translation_map.update(json.load(f))
+            except Exception as exc:
+                self.append_log(f"Could not read progress file for preview: {exc}\n")
+
+        if self.translated_xml_path and self.translated_xml_path.exists():
+            try:
+                translated_tree = ET.parse(self.translated_xml_path)
+                translated_root = translated_tree.getroot()
+                for chapter in translated_root.findall(".//chapter"):
+                    chapter_id = chapter.get("id")
+                    if chapter_id:
+                        translation_map[f"{chapter_id}_title"] = chapter.get("title", "")
+                    for para in chapter.findall(".//paragraph[@translate='yes']"):
+                        para_id = para.get("id")
+                        text_elem = para.find("text")
+                        if para_id and text_elem is not None and text_elem.text:
+                            translation_map[para_id] = text_elem.text
+            except Exception as exc:
+                self.append_log(f"Could not read translated XML for preview: {exc}\n")
+
+        self.preview_tree.delete(*self.preview_tree.get_children())
+        self.preview_data.clear()
+        self.preview_images.clear()
+
+        for chapter in original_root.findall("chapter"):
+            chapter_id = chapter.get("id", f"chapter_{len(self.preview_data)+1}")
+            chapter_title = chapter.get("title", "Untitled chapter")
+            translated_title = translation_map.get(f"{chapter_id}_title", chapter_title)
+
+            chapter_node = self.preview_tree.insert(
+                "",
+                tk.END,
+                iid=chapter_id,
+                text=translated_title or chapter_title,
+                values=("Chapter", "Translated" if translated_title != chapter_title else "Original"),
+            )
+
+            chapter_data: Dict[str, object] = {
+                "type": "chapter",
+                "original_title": chapter_title,
+                "translated_title": translated_title,
+            }
+            self.preview_data[chapter_id] = chapter_data
+
+            image_index = 0
+            for item in chapter:
+                if item.tag == "paragraph":
+                    para_id = item.get("id", f"{chapter_id}_p{len(self.preview_data)}")
+                    role = item.get("role", "")
+                    text_elem = item.find("text")
+                    original_text = text_elem.text if text_elem is not None else ""
+                    translated_text = translation_map.get(para_id, original_text)
+                    status = "Translated" if translated_text != original_text else "Pending"
+
+                    self.preview_tree.insert(
+                        chapter_node,
+                        tk.END,
+                        iid=para_id,
+                        text=(translated_text or original_text)[:80],
+                        values=("Paragraph", status),
+                    )
+
+                    self.preview_data[para_id] = {
+                        "type": "paragraph",
+                        "role": role,
+                        "original": original_text,
+                        "translated": translated_text,
+                        "chapter": chapter_id,
+                    }
+
+                elif item.tag == "image":
+                    image_index += 1
+                    img_id = item.get("id", f"{chapter_id}_img{image_index}")
+                    img_src = item.get("src", "")
+                    img_alt = item.get("alt", "")
+                    status = "Available" if img_src else "Missing"
+
+                    self.preview_tree.insert(
+                        chapter_node,
+                        tk.END,
+                        iid=img_id,
+                        text=img_alt or img_src or "Image",
+                        values=("Image", status),
+                    )
+
+                    absolute_path = (self.xml_path.parent / img_src).resolve()
+                    self.preview_data[img_id] = {
+                        "type": "image",
+                        "src": img_src,
+                        "alt": img_alt,
+                        "path": absolute_path,
+                    }
+
+        self.preview_title_var.set("Select an item to preview.")
+        self._clear_preview_text()
+        self.preview_image_label.configure(text="No image selected.", image="")
+
+    def _on_preview_select(self, _event: object) -> None:
+        selection = self.preview_tree.selection()
+        if not selection:
+            return
+        item_id = selection[0]
+        data = self.preview_data.get(item_id)
+        if not data:
+            return
+
+        item_type = data.get("type")
+        if item_type == "chapter":
+            self.preview_title_var.set("Chapter details")
+            self._set_preview_text(
+                original=data.get("original_title", ""),
+                translated=data.get("translated_title", ""),
+            )
+            self.preview_image_label.configure(text="No image selected.", image="")
+        elif item_type == "paragraph":
+            role = data.get("role")
+            title = "Paragraph"
+            if role:
+                title += f" ({role})"
+            self.preview_title_var.set(title)
+            self._set_preview_text(
+                original=data.get("original", ""),
+                translated=data.get("translated", ""),
+            )
+            self.preview_image_label.configure(text="No image selected.", image="")
+        elif item_type == "image":
+            self.preview_title_var.set(data.get("alt") or "Image")
+            self._clear_preview_text()
+            self._display_preview_image(data)
+
+    def _set_preview_text(self, original: str, translated: str) -> None:
+        self.preview_original_text.configure(state=tk.NORMAL)
+        self.preview_original_text.delete("1.0", tk.END)
+        self.preview_original_text.insert("1.0", original)
+        self.preview_original_text.configure(state=tk.DISABLED)
+
+        self.preview_translated_text.configure(state=tk.NORMAL)
+        self.preview_translated_text.delete("1.0", tk.END)
+        self.preview_translated_text.insert("1.0", translated)
+        self.preview_translated_text.configure(state=tk.DISABLED)
+
+    def _clear_preview_text(self) -> None:
+        self.preview_original_text.configure(state=tk.NORMAL)
+        self.preview_original_text.delete("1.0", tk.END)
+        self.preview_original_text.configure(state=tk.DISABLED)
+
+        self.preview_translated_text.configure(state=tk.NORMAL)
+        self.preview_translated_text.delete("1.0", tk.END)
+        self.preview_translated_text.configure(state=tk.DISABLED)
+
+    def _display_preview_image(self, data: Dict[str, object]) -> None:
+        path = data.get("path")
+        if not path or not Path(path).exists():
+            self.preview_image_label.configure(text="Image file not found.", image="")
+            return
+
+        try:
+            image = Image.open(Path(path))
+            max_size = (560, 560)
+            image.thumbnail(max_size, Image.LANCZOS)
+            photo = ImageTk.PhotoImage(image)
+            self.preview_images[str(path)] = photo  # Keep reference
+            self.preview_image_label.configure(image=photo, text="")
+        except Exception as exc:
+            self.preview_image_label.configure(text=f"Unable to load image: {exc}", image="")
+
+
+def main() -> None:
+    root = tk.Tk()
+    app = EpubTranslatorApp(root)
+    root.mainloop()
+
 
 if __name__ == "__main__":
     main()

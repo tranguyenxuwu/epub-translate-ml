@@ -1,139 +1,109 @@
-# EPUB Translator - Updated
+# EPUB Translator - Desktop Edition
 
-A Streamlit-based web application for translating EPUB files using AI translation services.
+A Tkinter-based desktop application for translating EPUB files using AI translation services.
 
-## New Features ✨
+## Highlights ✨
 
-### 1. **Improved Navigation**
+### Streamlined desktop workflow
 
-- **Main Workflow**: Complete EPUB translation pipeline
-- **Translation Preview**: Dedicated preview page for viewing translated content
-- Use the sidebar to navigate between pages
+- **Guided steps** for converting EPUB → XML → translated EPUB
+- **Integrated preview tab** with chapter/paragraph navigation and inline image support
+- **Persistent progress tracking** that automatically resumes unfinished translations
 
-### 2. **Enhanced Translation Control**
+### Flexible translation controls
 
-- **Stop Translation**: Click the "🛑 Stop" button to stop translation after the current batch
-- **Auto-Resume**: Translation automatically resumes from where it left off
-- **Progress Tracking**: Real-time progress display with completion percentage
+- Configure API key, model, batch size, and custom prompts
+- Quick templates for light-novel, general, and formal translation styles
+- Real-time progress indicators with the ability to stop gracefully after the current batch
 
-### 3. **Previous Translation Detection**
+### Smarter media handling
 
-- Automatically detects previous translation progress
-- Shows completion status and translated element count
-- Seamless resume functionality
-
-### 4. **Separated Preview**
-
-- Preview functionality moved to dedicated page
-- Better performance and organization
-- Access via sidebar navigation
+- The first extracted image is automatically assigned to the `<cover>` tag
+- Preview tab displays images next to text content for quick verification
 
 ## How to Run
 
-### Option 1: Use the Launcher (Recommended)
+### Option 1 · Recommended launcher
 
 ```bash
 python run_app.py
 ```
 
-### Option 2: Direct Streamlit
+### Option 2 · Direct execution
 
 ```bash
-streamlit run app.py
-```
-
-### Option 3: Preview Only
-
-```bash
-streamlit run st_preview_content.py --server.port 8502
+python app.py
 ```
 
 ## Usage Guide
 
-### 1. Main Workflow
+### 1. Main workflow tab
 
-1. **Upload EPUB**: Choose your EPUB file and convert to XML
-2. **Configure Translation**:
-   - Set API key (required)
-   - Choose translation model
-   - Adjust batch size
-   - Customize translation prompt
-3. **Translate**:
-   - Click "Translate XML" to start
-   - Monitor progress with the progress bar
-   - Use "🛑 Stop" to pause translation if needed
-   - Resume automatically by clicking "Translate XML" again
-4. **Create EPUB**: Generate the final translated EPUB file
+1. **Select EPUB**: Choose a source file and convert it to XML
+2. **Configure translation**:
+   - Enter your API key (required)
+   - Select a model or provide a custom endpoint name
+   - Adjust batch size and customise the translation prompt
+3. **Start translation**:
+   - Monitor progress via the built-in progress bar and activity log
+   - Use the **Stop** button to pause after the current batch – progress is saved
+4. **Create EPUB**: When translation is complete, generate the final EPUB with one click
 
-### 2. Translation Preview
+### 2. Preview tab
 
-- Use sidebar navigation to switch to "📖 Translation Preview"
-- View translated content chapter by chapter
-- Navigate between chapters
-- See translation statistics
+- Load the latest XML/progress data with one button
+- Browse chapters, paragraphs, and images in a tree view
+- Inspect original vs. translated text side-by-side
+- View embedded images directly inside the application
 
 ## Key Improvements
 
-- ✅ **Stop/Resume Translation**: You can now stop and resume translations
-- ✅ **Progress Bar**: Real-time translation progress tracking
-- ✅ **Auto-Detection**: Automatically detects and resumes previous translations
-- ✅ **Organized UI**: Separated main workflow and preview into different pages
-- ✅ **Better Error Handling**: Improved error messages and recovery
-- ✅ **Performance**: Better memory usage and responsiveness
+- ✅ Fully desktop-native UI (no browser required)
+- ✅ Automatic cover selection from the first extracted image
+- ✅ Integrated preview experience with text and image support
+- ✅ Enhanced logging and feedback through the activity log
+- ✅ Simplified launch workflow (`python run_app.py`)
 
 ## Requirements
 
 - Python 3.8+
-- streamlit
 - openai
 - python-dotenv
 - tiktoken
-- Pillow
-- All other dependencies from requirements.txt
+- ebooklib
+- beautifulsoup4
+- pillow
+
+> **Note:** Tkinter ships with standard Python distributions on Windows, macOS, and most Linux builds. No extra installation is required.
 
 ## Environment Variables
 
-Set your API key:
+Set your API key in an environment variable or `.env` file:
 
 ```bash
-# In .env file or environment
 API_KEY=your_api_key_here
 ```
-
-## Supported Models
-
-- microsoft/mai-ds-r1:free (default)
-- anthropic/claude-3.5-sonnet
-- openai/gpt-4o
-- openai/gpt-4o-mini
-- google/gemini-pro-1.5
-- meta-llama/llama-3.1-70b-instruct
-- Custom models (enter manually)
 
 ## File Structure
 
 ```
-├── app.py                    # Main Streamlit application
-├── st_preview_content.py     # Preview functionality
-├── epub_to_xml.py           # EPUB to XML conversion
-├── translate_xml.py         # XML translation with AI
-├── xml_to_epub.py          # XML to EPUB conversion
-├── run_app.py              # Launcher script
-├── pages/
-│   └── preview.py          # Preview page (fallback)
-└── output/                 # Generated files directory
+├── app.py              # Tkinter UI for the translation workflow
+├── epub_to_xml.py      # EPUB to XML conversion pipeline
+├── translate_xml.py    # AI-powered translation logic
+├── xml_to_epub.py      # XML back to EPUB conversion
+├── run_app.py          # Convenience launcher for the desktop UI
+└── output/             # Generated XML, progress JSON, images, and EPUB files
 ```
 
 ## Troubleshooting
 
-1. **Translation Not Resuming**: Check that the progress JSON file exists in the output directory
-2. **Preview Not Working**: Use the direct preview command: `streamlit run st_preview_content.py`
-3. **Stop Button Not Working**: The translation will stop after the current batch completes
-4. **API Errors**: Check your API key and model selection
+1. **No translation progress detected** → Ensure `output/*.xml` exists and that the translation step has been run at least once.
+2. **API errors** → Confirm the API key and model name are valid for your provider.
+3. **Images not loading in preview** → Verify that the `output/images` directory contains extracted assets.
+4. **UI not starting** → Ensure you are running a Python build with Tkinter support (`python -m tkinter` should open a test window).
 
 ## Usage Tips
 
-- **Large Files**: Use smaller batch sizes (10-30) for better reliability
-- **Resume**: Always check the progress indicator before starting translation
-- **Stop Safely**: Use the stop button rather than closing the browser
-- **Preview**: Check the preview page periodically to verify translation quality
+- Use smaller batch sizes (10–30) for unstable network conditions.
+- Keep the application open after pressing **Stop** so the current batch can finish cleanly.
+- Refresh the preview tab after long translation runs to see the latest content.

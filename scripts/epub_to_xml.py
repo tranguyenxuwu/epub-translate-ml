@@ -696,6 +696,38 @@ class EPUBProcessor:
         try:
             self.logger.info("Bắt đầu tạo file XML từ dữ liệu cấu trúc...")
             root = ET.Element("lightnovel")
+
+            # --- Cover image (first extracted image) ---
+            cover_added = False
+            if self.image_processor and self.image_processor.image_log:
+                first_image = self.image_processor.image_log[0]
+                image_file_path = Path(first_image.get('filepath', ''))
+                xml_file_path = self.base_dir / self.config.xml_filename
+
+                if image_file_path.exists():
+                    try:
+                        relative_image_path = os.path.relpath(image_file_path, start=xml_file_path.parent)
+                        relative_image_path = relative_image_path.replace('\\', '/')
+                    except ValueError:
+                        self.logger.warning(
+                            "Cannot create relative path for cover image %s from %s. Using default relative path.",
+                            image_file_path,
+                            xml_file_path.parent,
+                        )
+                        relative_image_path = f"{self.config.image_dir}/{first_image.get('filename', 'cover_image')}"
+
+                    cover_elem = ET.SubElement(root, "cover")
+                    ET.SubElement(
+                        cover_elem,
+                        "image",
+                        src=relative_image_path,
+                        alt=first_image.get('alt', 'Cover image'),
+                    )
+                    cover_added = True
+                    self.logger.info("Added <cover> element referencing first extracted image: %s", relative_image_path)
+
+            if not cover_added:
+                self.logger.info("No suitable image found for <cover> element.")
             current_chapter_element = None
             chapter_count = 0
             paragraph_count = 0

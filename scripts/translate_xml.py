@@ -6,6 +6,7 @@ import signal
 import json
 import xml.etree.ElementTree as ET
 from xml.dom import minidom
+from typing import Callable, Dict, Optional
 import tiktoken
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -112,6 +113,8 @@ class XMLTranslator:
         self.translation_cache = {}
         self.context_lines = []
         self.elements_to_translate = []
+        self.request_callback: Optional[Callable[[Dict[str, object]], None]] = None
+        self._request_counter = 0
         # Initialize with default values
         self.prompt_template = PROMPT_TEMPLATE
         self.model = API_MODEL
@@ -311,8 +314,9 @@ class XMLTranslator:
         if stop_flag:
             print("Stop flag detected, skipping batch processing.")
             return None, False
-            
+
         timer = TimerWithProgress()
+        batch_size = len(batch_texts_with_ids)
         # best_result_lines = None # These variables seem unused
         # best_avg_ratio = -1
 
@@ -332,7 +336,16 @@ class XMLTranslator:
         for attempt in range(MAX_RETRIES):
             if stop_flag or self._check_interrupt():
                 print("Translation interrupted during API retry loop.")
-                return None, False # Interrupted
+                return None, False  # Interrupted
+
+            request_id = self._next_request_id()
+            self._emit_request_event({
+                "id": request_id,
+                "status": "pending",
+                "attempt": attempt + 1,
+                "batch_size": batch_size,
+            })
+
             try:
                 timer.start()
                 response = self.client.chat.completions.create(
@@ -345,7 +358,7 @@ class XMLTranslator:
                     #     "reasoning_effort": RSE  # Or "medium", "high" as needed
                     # }
                 )
-                elapsed = timer.stop() # Stop timer regardless of content validity
+                elapsed = timer.stop()  # Stop timer regardless of content validity
 
                 # --- Check for valid content before stripping ---
                 if response.choices and response.choices[0].message and response.choices[0].message.content is not None:
@@ -353,15 +366,23 @@ class XMLTranslator:
                 else:
                     # Handle the case where content is None - THIS SHOULD RETRY
                     print(f"\n   Attempt {attempt + 1}/{MAX_RETRIES}: Failed - API returned None content. Retrying...")
-                    time.sleep(2 ** attempt) # Exponential backoff
-                    continue # Go to the next attempt
+                    self._emit_request_event({
+                        "id": request_id,
+                        "status": "error",
+                        "details": "Empty response from API",
+                        "attempt": attempt + 1,
+                        "batch_size": batch_size,
+                        "elapsed": elapsed,
+                    })
+                    time.sleep(2 ** attempt)  # Exponential backoff
+                    continue  # Go to the next attempt
 
                 raw_result_lines = result.split('\n')
-                parsed_translations = [] # List of (id, text) tuples
+                parsed_translations = []  # List of (id, text) tuples
                 malformed_lines = 0
 
                 for line in raw_result_lines:
-                    if not line.strip(): # Skip empty lines from API response
+                    if not line.strip():  # Skip empty lines from API response
                         continue
                     try:
                         # Expecting format "id: translated text"
@@ -383,15 +404,23 @@ class XMLTranslator:
                         print(f"   Error parsing translation line '{line[:100]}...': {e}. Skipping.")
                         malformed_lines += 1
 
-                if not parsed_translations and result: # No valid ID:text pairs parsed, but got some result
+                if not parsed_translations and result:  # No valid ID:text pairs parsed, but got some result
                     print(f"\n   Attempt {attempt + 1}/{MAX_RETRIES}: Failed - No valid 'id: text' lines parsed from API response. Response: {result[:200]}... Retrying...")
+                    self._emit_request_event({
+                        "id": request_id,
+                        "status": "error",
+                        "details": "No valid id:text lines",
+                        "attempt": attempt + 1,
+                        "batch_size": batch_size,
+                        "elapsed": elapsed,
+                    })
                     time.sleep(2 ** attempt)
                     continue
 
                 # Check if the number of *parsed valid translations* matches the number of *sent items*
                 is_complete_match = len(parsed_translations) == len(batch_texts_with_ids)
 
-                if parsed_translations: # We got at least one valid (id, text) pair
+                if parsed_translations:  # We got at least one valid (id, text) pair
                     trans_tokens = len(self.tokenizer.encode(result)) if self.tokenizer else len(result.split())
                     avg_ratio = (trans_tokens / src_tokens) if src_tokens else 0
                     status_message = "Success!" if is_complete_match else "Partial Success - ID/Line count mismatch."
@@ -403,14 +432,33 @@ class XMLTranslator:
                     # Update context with the text part of new translations
                     self.context_lines.extend([t[1] for t in parsed_translations])
                     self.context_lines = self.context_lines[-CONTEXT_WINDOW*2:]
+                    detail_message = f"{len(parsed_translations)}/{batch_size} items"
+                    if not is_complete_match:
+                        detail_message += " (partial)"
+                    self._emit_request_event({
+                        "id": request_id,
+                        "status": "finished",
+                        "details": detail_message,
+                        "attempt": attempt + 1,
+                        "batch_size": batch_size,
+                        "elapsed": elapsed,
+                    })
                     return parsed_translations, is_complete_match
-                else: # No translations parsed, and it wasn't caught by 'if not parsed_translations and result:' (e.g. API returned only whitespace)
+                else:  # No translations parsed, and it wasn't caught by 'if not parsed_translations and result:' (e.g. API returned only whitespace)
                     print(f"\n   Attempt {attempt + 1}/{MAX_RETRIES}: Failed - API returned empty or unparseable result. Retrying...")
+                    self._emit_request_event({
+                        "id": request_id,
+                        "status": "error",
+                        "details": "Empty or unparseable result",
+                        "attempt": attempt + 1,
+                        "batch_size": batch_size,
+                        "elapsed": elapsed,
+                    })
                     time.sleep(2 ** attempt)
                     continue
 
-            except Exception as e: # API errors (including 429) or other issues - THIS SHOULD RETRY
-                elapsed = timer.stop() # Ensure timer stops on exception too
+            except Exception as e:  # API errors (including 429) or other issues - THIS SHOULD RETRY
+                elapsed = timer.stop()  # Ensure timer stops on exception too
                 # --- Enhanced Error Logging ---
                 import traceback
                 error_type = type(e).__name__
@@ -420,16 +468,27 @@ class XMLTranslator:
                 print(f"   Failed Batch Content (first 100 chars): {content_to_translate[:100]}...")
                 # --- End Enhanced Error Logging ---
 
+                status_code = getattr(e, 'status_code', None) or getattr(getattr(e, 'response', None), 'status_code', None)
+                status_label = "429" if status_code == 429 or ('429' in str(e)) else "error"
+                self._emit_request_event({
+                    "id": request_id,
+                    "status": status_label,
+                    "details": str(e),
+                    "attempt": attempt + 1,
+                    "batch_size": batch_size,
+                    "elapsed": elapsed,
+                })
+
                 if attempt == MAX_RETRIES - 1:
-                     # --- Clarified message ---
+                    # --- Clarified message ---
                     print("   Max retries reached for this batch. Skipping.")
-                    return None, False # Failed after retries
+                    return None, False  # Failed after retries
                 wait_time = 2 ** attempt + 1
                 print(f"   Retrying in {wait_time} seconds...")
-                time.sleep(wait_time) # Exponential backoff
+                time.sleep(wait_time)  # Exponential backoff
                 # Implicitly continues to the next attempt via the loop
 
-        return None, False # Failed all retries
+        return None, False  # Failed all retries
 
     def rebuild_xml(self):
         print(f"\nRebuilding XML with translations from cache ({len(self.translation_cache)} entries)...")
@@ -503,6 +562,22 @@ class XMLTranslator:
         self.batch_size = batch_size
         print(f"Batch size set to: {batch_size}")
 
+    def set_request_callback(self, callback: Callable[[Dict[str, object]], None]):
+        """Register a callback for request status updates"""
+        self.request_callback = callback
+
+    def _emit_request_event(self, payload: Dict[str, object]):
+        """Send request event to the registered callback"""
+        if self.request_callback:
+            try:
+                self.request_callback(payload)
+            except Exception:
+                pass
+
+    def _next_request_id(self) -> int:
+        self._request_counter += 1
+        return self._request_counter
+
     def stop_translation(self):
         """Stop the current translation process"""
         global stop_flag
@@ -535,6 +610,7 @@ class XMLTranslator:
     def reset_interrupt_flag(self):
         """Reset the interrupt flag for a new translation session"""
         self._interrupt_requested = False
+        self._request_counter = 0
         global stop_flag
         stop_flag = False
         print("Translation flags reset. Ready for new translation.")

@@ -4,13 +4,14 @@ from bs4 import BeautifulSoup
 import os
 import base64
 from pathlib import Path
+from typing import Dict, Optional
 import logging
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-def create_epub_from_xml(xml_path, epub_path, output_dir):
+def create_epub_from_xml(xml_path, epub_path, output_dir, metadata: Optional[Dict[str, str]] = None):
     """Creates an EPUB file from a structured XML file."""
     logger.info(f"Starting EPUB creation from XML: {xml_path}")
 
@@ -26,11 +27,31 @@ def create_epub_from_xml(xml_path, epub_path, output_dir):
 
     book = epub.EpubBook()
 
-    # --- Metadata --- (Add more as needed)
-    book.set_identifier('unique_id_placeholder') # Replace with actual ID
-    book.set_title(soup.find('title').get_text() if soup.find('title') else 'Untitled Light Novel') # Example: Get title if available
-    book.set_language('vi') # Assuming Vietnamese based on content
-    book.add_author('Unknown Author') # Replace or extract author if available
+    metadata = metadata or {}
+    inferred_title_tag = soup.find('title')
+    inferred_title = inferred_title_tag.get_text() if inferred_title_tag else 'Untitled Light Novel'
+    inferred_author_tag = soup.find('author')
+    inferred_author = inferred_author_tag.get_text(strip=True) if inferred_author_tag else ''
+
+    identifier = metadata.get('identifier') or 'unique_id_placeholder'
+    book.set_identifier(identifier)
+    book.set_title(metadata.get('title') or inferred_title)
+    book.set_language(metadata.get('language') or 'vi')
+
+    author_value = metadata.get('author') or inferred_author
+    if author_value:
+        author_candidates = [part.strip() for part in author_value.replace(';', ',').split(',') if part.strip()]
+        if author_candidates:
+            for author in author_candidates:
+                book.add_author(author)
+        else:
+            book.add_author('Unknown Author')
+    else:
+        book.add_author('Unknown Author')
+
+    publisher_value = metadata.get('publisher')
+    if publisher_value:
+        book.add_metadata('DC', 'publisher', publisher_value)
 
     # --- Cover Image --- 
     cover_img_tag = soup.find('cover')

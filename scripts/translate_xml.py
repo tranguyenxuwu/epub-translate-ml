@@ -118,6 +118,8 @@ class XMLTranslator:
         self.batch_size = BATCH_SIZE
         # Initialize interrupt flag
         self._interrupt_requested = False
+        self.consecutive_rate_limit_errors = 0
+        self.rate_limit_stop_triggered = False
 
     def _generate_output_path(self, base_path, suffix):
         base_name = os.path.splitext(base_path)[0]
@@ -346,6 +348,7 @@ class XMLTranslator:
                     # }
                 )
                 elapsed = timer.stop() # Stop timer regardless of content validity
+                self.consecutive_rate_limit_errors = 0
 
                 # --- Check for valid content before stripping ---
                 if response.choices and response.choices[0].message and response.choices[0].message.content is not None:
@@ -411,23 +414,45 @@ class XMLTranslator:
 
             except Exception as e: # API errors (including 429) or other issues - THIS SHOULD RETRY
                 elapsed = timer.stop() # Ensure timer stops on exception too
-                # --- Enhanced Error Logging ---
-                import traceback
                 error_type = type(e).__name__
+                status_code = getattr(e, "status_code", None)
+                response_obj = getattr(e, "response", None)
+                if status_code is None and response_obj is not None:
+                    status_code = getattr(response_obj, "status_code", None)
+                message_text = str(e)
+                if status_code is None and "429" in message_text:
+                    status_code = 429
+
                 print(f"\n   Attempt {attempt + 1}/{MAX_RETRIES}: API Error ({elapsed:.1f}s): {error_type} - {e}")
-                # print(f"   Traceback: {traceback.format_exc()}") # Uncomment for detailed debugging
-                # Log details about the batch that failed
                 print(f"   Failed Batch Content (first 100 chars): {content_to_translate[:100]}...")
-                # --- End Enhanced Error Logging ---
+
+                is_rate_limit = status_code == 429
+                if is_rate_limit:
+                    self.consecutive_rate_limit_errors += 1
+                    print(
+                        "   Rate limit detected (HTTP 429). Consecutive occurrences: "
+                        f"{self.consecutive_rate_limit_errors}."
+                    )
+                    if self.consecutive_rate_limit_errors >= 5:
+                        print(
+                            "   Received 5 consecutive HTTP 429 responses. Stopping translation to avoid further rate limiting."
+                        )
+                        self.rate_limit_stop_triggered = True
+                        stop_flag = True
+                        self._interrupt_requested = True
+                        return None, False
+                else:
+                    self.consecutive_rate_limit_errors = 0
 
                 if attempt == MAX_RETRIES - 1:
-                     # --- Clarified message ---
                     print("   Max retries reached for this batch. Skipping.")
                     return None, False # Failed after retries
+
                 wait_time = 2 ** attempt + 1
+                if is_rate_limit:
+                    wait_time = max(wait_time, 5)
                 print(f"   Retrying in {wait_time} seconds...")
                 time.sleep(wait_time) # Exponential backoff
-                # Implicitly continues to the next attempt via the loop
 
         return None, False # Failed all retries
 
